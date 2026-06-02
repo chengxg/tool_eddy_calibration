@@ -1,0 +1,1524 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+	<head>
+		<meta charset="UTF-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<title>抛物线拟合曲线工具</title>
+		<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+		<style>
+			:root {
+				color-scheme: light;
+				--bg: #f4efe6;
+				--panel: rgba(255, 252, 247, 0.88);
+				--line: #d6c8b5;
+				--text: #2b241d;
+				--muted: #74685b;
+				--accent: #c8563d;
+				--accent-strong: #8d2f1f;
+				--scatter: #2563eb;
+				--curve: #c2410c;
+				--shadow: 0 18px 40px rgba(60, 42, 22, 0.12);
+			}
+
+			html,
+			body {
+				height: 100%;
+				overflow: hidden;
+			}
+
+			* {
+				box-sizing: border-box;
+			}
+
+			body {
+				margin: 0;
+				font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+				color: var(--text);
+				background:
+					radial-gradient(circle at top left, rgba(200, 86, 61, 0.16), transparent 32%),
+					radial-gradient(circle at bottom right, rgba(37, 99, 235, 0.12), transparent 28%),
+					linear-gradient(135deg, #f7f2ea 0%, #efe4d4 100%);
+			}
+
+			.layout {
+				display: grid;
+				grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+				gap: 20px;
+				padding: 24px;
+				height: 100vh;
+			}
+
+			.panel {
+				background: var(--panel);
+				border: 1px solid rgba(214, 200, 181, 0.8);
+				border-radius: 24px;
+				box-shadow: var(--shadow);
+				backdrop-filter: blur(10px);
+			}
+
+			.sidebar {
+				padding: 24px;
+				display: flex;
+				flex-direction: column;
+				gap: 14px;
+				overflow-y: auto;
+				min-height: 0;
+			}
+
+			h1 {
+				margin: 0;
+				font-size: 28px;
+				letter-spacing: 0.04em;
+			}
+
+			.subtitle {
+				margin: 8px 0 0;
+				color: var(--muted);
+				line-height: 1.6;
+				font-size: 14px;
+			}
+
+			.label {
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+				font-size: 14px;
+				margin-bottom: 8px;
+				color: var(--muted);
+			}
+
+			.input-row {
+				display: flex;
+				gap: 12px;
+				align-items: stretch;
+			}
+
+			.input-col {
+				display: flex;
+				flex-direction: column;
+				align-items: stretch;
+			}
+
+			.input-row .upload-area {
+				width: 100%;
+				height: 150px;
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				justify-content: center;
+				border: 2px dashed var(--line);
+				border-radius: 18px;
+				padding: 12px 8px;
+				cursor: pointer;
+				transition: all 0.3s ease;
+				background: rgba(255, 255, 255, 0.5);
+			}
+
+			.input-row .upload-area:hover {
+				background: rgba(255, 255, 255, 0.78);
+				border-color: var(--accent);
+			}
+
+			.input-row .upload-area.dragover {
+				background: rgba(200, 86, 61, 0.08);
+				border-color: var(--accent);
+			}
+
+			.input-row .upload-area input[type="file"] {
+				display: none;
+			}
+
+			.upload-icon {
+				font-size: 24px;
+				margin-bottom: 2px;
+			}
+
+			.upload-hint {
+				font-size: 11px;
+				color: var(--muted);
+			}
+
+			.file-info {
+				margin-top: 4px;
+				font-size: 11px;
+				color: var(--muted);
+			}
+
+			.file-info.loaded {
+				color: #16a34a;
+			}
+
+			.input-row .pointInput-wrap {
+				width: 100%;
+				height: 150px;
+				border: 1px solid var(--line);
+				border-radius: 18px;
+				padding: 8px;
+				background: rgba(255, 255, 255, 0.72);
+				outline: none;
+				transition: border-color 0.2s ease, box-shadow 0.2s ease;
+			}
+
+			.input-row .pointInput-wrap:hover {
+				border-color: rgba(200, 86, 61, 0.8);
+				box-shadow: 0 0 0 4px rgba(200, 86, 61, 0.12);
+			}
+
+			textarea {
+				width: 100%;
+				height: 100%;
+				resize: none;
+				border: none;
+				color: var(--text);
+				font: 14px/1.6 "Cascadia Mono", "Consolas", monospace;
+				outline: none;
+			}
+
+			.peak-type-row {
+				display: flex;
+				gap: 8px;
+				align-items: center;
+			}
+
+			.peak-type-row select {
+				padding: 8px 12px;
+				border: 1px solid var(--line);
+				border-radius: 12px;
+				font: 14px/1.4 "Segoe UI", "PingFang SC", sans-serif;
+				color: var(--text);
+				background: rgba(255, 255, 255, 0.72);
+				outline: none;
+				cursor: pointer;
+			}
+
+			.peak-type-row select:focus {
+				border-color: var(--accent);
+			}
+
+			.peak-type-badge {
+				display: inline-block;
+				padding: 4px 10px;
+				border-radius: 999px;
+				font-size: 12px;
+				font-weight: 600;
+			}
+
+			.peak-type-badge.peak {
+				background: rgba(194, 65, 12, 0.12);
+				color: #c2410c;
+			}
+
+			.peak-type-badge.valley {
+				background: rgba(37, 99, 235, 0.12);
+				color: #2563eb;
+			}
+
+			.actions {
+				display: flex;
+				gap: 12px;
+				flex-wrap: wrap;
+			}
+
+			button {
+				border: 0;
+				border-radius: 999px;
+				padding: 12px 18px;
+				font-size: 14px;
+				font-weight: 600;
+				cursor: pointer;
+				transition: transform 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
+			}
+
+			button:hover {
+				transform: translateY(-1px);
+			}
+
+			.primary {
+				background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+				color: #fff;
+				box-shadow: 0 12px 24px rgba(141, 47, 31, 0.22);
+			}
+
+			.secondary {
+				background: rgba(255, 255, 255, 0.78);
+				color: var(--text);
+				border: 1px solid rgba(214, 200, 181, 0.9);
+			}
+
+			.result-grid {
+				display: grid;
+				grid-template-columns: repeat(2, minmax(0, 1fr));
+				gap: 12px;
+			}
+
+			.stat-card {
+				padding: 14px 16px;
+				border-radius: 18px;
+				background: rgba(255, 255, 255, 0.72);
+				border: 1px solid rgba(214, 200, 181, 0.85);
+			}
+
+			.stat-label {
+				font-size: 12px;
+				color: var(--muted);
+				margin-bottom: 6px;
+			}
+
+			.stat-value {
+				font-size: 18px;
+				font-weight: 700;
+			}
+
+			.equation {
+				padding: 16px;
+				border-radius: 18px;
+				background: linear-gradient(180deg, rgba(255, 255, 255, 0.8), rgba(244, 239, 230, 0.95));
+				border: 1px solid rgba(214, 200, 181, 0.85);
+				line-height: 1.7;
+			}
+
+			.equation strong {
+				display: block;
+				margin-bottom: 6px;
+				font-size: 13px;
+				color: var(--muted);
+			}
+
+			.scan-info {
+				padding: 12px 16px;
+				border-radius: 18px;
+				background: rgba(37, 99, 235, 0.06);
+				border: 1px solid rgba(37, 99, 235, 0.15);
+				font-size: 12px;
+				line-height: 1.8;
+				color: var(--muted);
+				display: none;
+			}
+
+			.scan-info .param-item {
+				display: inline-block;
+				margin-right: 12px;
+			}
+
+			.scan-info .param-val {
+				color: var(--text);
+				font-weight: 600;
+				font-family: "Cascadia Mono", "Consolas", monospace;
+			}
+
+			.message {
+				min-height: 24px;
+				font-size: 13px;
+				color: var(--muted);
+			}
+
+			.message.error {
+				color: #b42318;
+			}
+
+			.chart-panel {
+				padding: 18px;
+				display: flex;
+				flex-direction: column;
+				min-height: 0;
+			}
+
+			.chart-header {
+				display: flex;
+				justify-content: space-between;
+				gap: 16px;
+				align-items: flex-start;
+				padding: 6px 6px 18px;
+			}
+
+			.chart-title {
+				margin: 0;
+				font-size: 18px;
+			}
+
+			.chart-note {
+				margin: 6px 0 0;
+				font-size: 13px;
+				line-height: 1.6;
+				color: var(--muted);
+			}
+
+			#chart {
+				flex: 1;
+				min-height: 0;
+			}
+
+			@media (max-width: 980px) {
+				.layout {
+					grid-template-columns: 1fr;
+					height: auto;
+				}
+
+				#chart {
+					min-height: 420px;
+				}
+			}
+		</style>
+	</head>
+
+	<body>
+		<main class="layout">
+			<section class="panel sidebar">
+				<div>
+					<h1>抛物线拟合曲线工具</h1>
+					<p class="subtitle">
+						支持导入涡流校准插件保存的 CSV 文件，自动解析扫描参数，
+						自动判断峰值型/谷底型信号，使用与插件一致的高斯加权抛物线拟合算法。
+					</p>
+				</div>
+
+				<div class="input-row">
+					<div class="input-col" style="width: 40%;">
+						<div class="label"><span>文件导入</span></div>
+						<div class="upload-area" id="uploadArea">
+							<div class="upload-icon">&#128196;</div>
+							<div class="upload-hint">导入 CSV</div>
+							<div class="file-info" id="fileInfo">.csv</div>
+							<input type="file" id="fileInput" accept=".csv">
+						</div>
+					</div>
+					<div class="input-col" style="width: 60%;">
+						<div class="label">
+							<span>数据点输入</span>
+							<span id="pointCountLabel">0 个点</span>
+						</div>
+						<div class="pointInput-wrap">
+							<textarea id="pointInput" spellcheck="false" placeholder="1.逐行输入示例: 0,1 1,3 2,8 2.JSON输入示例: [[0, 1], [1, 3], [2, 8]]">
+						</textarea>
+						</div>
+					</div>
+				</div>
+
+				<div class="label">
+					<span>峰值类型</span>
+				</div>
+				<div class="peak-type-row">
+					<select id="peakTypeSelect">
+						<option value="auto">自动检测</option>
+						<option value="peak">峰值型 (中心频率最高)</option>
+						<option value="valley">谷底型 (中心频率最低)</option>
+					</select>
+					<span id="detectedTypeBadge" class="peak-type-badge" style="display:none;"></span>
+				</div>
+
+				<div class="label">
+					<span>拟合窗口半宽（样本点数）</span>
+					<span id="fitRangeValue">100</span>
+				</div>
+				<div class="input-row" style="align-items:center;gap:12px;">
+					<input type="range" id="fitRangeSlider" min="1" max="500" value="100"
+						style="flex:1;accent-color:var(--accent);">
+					<input type="number" id="fitRangeInput" min="1" max="9999" value="100"
+						style="width:72px;padding:8px 10px;border:1px solid var(--line);border-radius:12px;
+						font:14px/1.4 Cascadia Mono,Consolas,monospace;color:var(--text);
+						background:rgba(255,255,255,0.72);outline:none;text-align:center;">
+				</div>
+
+				<div class="actions">
+					<button id="fitButton" class="primary">执行拟合</button>
+					<button id="sampleButton" class="secondary">填充示例</button>
+					<button id="clearButton" class="secondary">清空数据</button>
+				</div>
+
+				<div class="result-grid">
+					<div class="stat-card">
+						<div class="stat-label">数据点数</div>
+						<div id="pointCount" class="stat-value">0</div>
+					</div>
+					<div class="stat-card">
+						<div class="stat-label">拟合优度 R&#178;</div>
+						<div id="rSquared" class="stat-value">-</div>
+					</div>
+					<div class="stat-card">
+						<div class="stat-label">检测类型</div>
+						<div id="detectedType" class="stat-value">-</div>
+					</div>
+					<div class="stat-card">
+						<div class="stat-label">峰值距起点</div>
+						<div id="peakPosition" class="stat-value">-</div>
+					</div>
+				</div>
+
+				<div class="equation">
+					<strong>拟合方程</strong>
+					<div id="equationText">等待输入数据</div>
+				</div>
+
+				<div id="peakInfo" class="scan-info"></div>
+				<div id="scanInfo" class="scan-info"></div>
+
+				<div id="message" class="message"></div>
+			</section>
+
+			<section class="panel chart-panel">
+				<div class="chart-header">
+					<div>
+						<h2 class="chart-title">波形数据与拟合曲线</h2>
+						<p class="chart-note">
+							蓝色线条为波形数据，绿色散点为拟合区域，橙色曲线为高斯加权抛物线拟合结果。
+						</p>
+					</div>
+				</div>
+				<div id="chart"></div>
+			</section>
+		</main>
+
+		<script>
+			/* ========== 全局状态 ========== */
+			let fitRange = 100;
+			let csvParams = null;       // CSV 参数行解析结果
+			let fullWaveformData = null; // [[position_mm, freq, x_mm, y_mm], ...]
+			let currentAllPoints = [];
+
+			const samplePoints = [
+				[-5, 22.4], [-4, 14.1], [-3, 8.8], [-2, 4.1], [-1, 1.3],
+				[0, 0.7], [1, 1.1], [2, 4.5], [3, 9.6], [4, 15.2], [5, 22.7]
+			];
+
+			const pointInput = document.getElementById("pointInput");
+			const pointCount = document.getElementById("pointCount");
+			const pointCountLabel = document.getElementById("pointCountLabel");
+			const rSquared = document.getElementById("rSquared");
+			const detectedType = document.getElementById("detectedType");
+			const peakPosition = document.getElementById("peakPosition");
+			const equationText = document.getElementById("equationText");
+			const message = document.getElementById("message");
+			const scanInfoDiv = document.getElementById("scanInfo");
+			const peakInfoDiv = document.getElementById("peakInfo");
+			const peakTypeSelect = document.getElementById("peakTypeSelect");
+			const detectedTypeBadge = document.getElementById("detectedTypeBadge");
+			const chart = echarts.init(document.getElementById("chart"));
+
+			/* ========== CSV 解析 ========== */
+
+			function parseParamsLine(line) {
+				const content = line.replace(/^#\s*/, "");
+				const params = {};
+				content.split(",").forEach(part => {
+					const eqIdx = part.indexOf("=");
+					if (eqIdx > 0) {
+						const key = part.substring(0, eqIdx).trim();
+						const val = part.substring(eqIdx + 1).trim();
+						params[key] = isNaN(val) || val === "" ? val : parseFloat(val);
+					}
+				});
+				return params;
+			}
+
+			function parseCSV(text) {
+				const lines = text.trim().split(/\r?\n/);
+				if (lines.length < 2) return null;
+
+				// 检测参数行
+				csvParams = null;
+				let dataStartLine = 0;
+
+				if (lines[0].startsWith("#")) {
+					csvParams = parseParamsLine(lines[0]);
+					dataStartLine = 1;
+				}
+
+				// 解析表头
+				const headers = lines[dataStartLine].split(",").map(h => h.trim().toLowerCase());
+				const posIndex = headers.findIndex(h => h.includes("position") && h.includes("mm"));
+				const xIndex = headers.findIndex(h => h === "x_mm");
+				const yIndex = headers.findIndex(h => h === "y_mm");
+				const freqIndex = headers.findIndex(h => h.includes("frequency"));
+
+				if (freqIndex === -1) {
+					throw new Error("CSV 文件必须包含 frequency 列");
+				}
+
+				const data = [];
+				for (let i = dataStartLine + 1; i < lines.length; i++) {
+					const values = lines[i].split(",").map(v => v.trim());
+					if (values.length <= freqIndex) continue;
+
+					const freq = parseFloat(values[freqIndex]);
+					if (isNaN(freq) || freq < 1000000) continue; // 跳过无效低频
+
+					if (xIndex !== -1 && yIndex !== -1) {
+						// 新格式: x_mm, y_mm, frequency_hz
+						const x_mm = parseFloat(values[xIndex]);
+						const y_mm = parseFloat(values[yIndex]);
+						if (!isNaN(x_mm) && !isNaN(y_mm)) {
+							data.push([0, freq, x_mm, y_mm]); // position 待计算
+						}
+					} else if (posIndex !== -1) {
+						// 旧格式: position_mm, frequency_hz
+						const pos = parseFloat(values[posIndex]);
+						if (!isNaN(pos)) {
+							data.push([pos, freq]);
+						}
+					}
+				}
+
+				// 从 x_mm, y_mm 计算沿扫描方向的位置
+				if (data.length > 1 && data[0].length >= 4) {
+					computePosition(data);
+				}
+
+				return data;
+			}
+
+			function computePosition(data) {
+				const firstX = data[0][2], firstY = data[0][3];
+				const lastX = data[data.length - 1][2], lastY = data[data.length - 1][3];
+				const dx = lastX - firstX, dy = lastY - firstY;
+				const len = Math.sqrt(dx * dx + dy * dy);
+				if (len < 1e-6) {
+					// 无法计算方向，使用索引近似
+					for (let i = 0; i < data.length; i++) data[i][0] = i;
+					return;
+				}
+				const dirX = dx / len, dirY = dy / len;
+				for (const pt of data) {
+					pt[0] = (pt[2] - firstX) * dirX + (pt[3] - firstY) * dirY;
+				}
+			}
+
+			function handleCSVFile(file) {
+				if (!file.name.toLowerCase().endsWith(".csv")) {
+					setMessage("请上传 CSV 格式文件", true);
+					return;
+				}
+
+				const reader = new FileReader();
+				reader.onload = (e) => {
+					try {
+						const data = parseCSV(e.target.result);
+						if (!data || data.length < 10) {
+							throw new Error("数据点不足，至少需要 10 个有效样本");
+						}
+
+						fullWaveformData = sortPoints(data);
+
+						// 填入文本框
+						pointInput.value = fullWaveformData.map(pt => {
+							if (pt.length >= 4) {
+								return `${pt[0].toFixed(4)}, ${pt[1].toFixed(1)}, ${pt[2].toFixed(4)}, ${pt[3].toFixed(4)}`;
+							}
+							return `${pt[0].toFixed(4)}, ${pt[1].toFixed(1)}`;
+						}).join("\n");
+						updateInputCountLabel();
+
+						document.getElementById("fileInfo").textContent =
+							`${file.name} (${data.length} 点)`;
+						document.getElementById("fileInfo").classList.add("loaded");
+
+						// 从 CSV 参数自动设置 fitRange 和 peak_type
+						if (csvParams) {
+							if (csvParams.coil_inner_diameter && csvParams.sps && csvParams.scan_speed) {
+								const effectiveRadius = (csvParams.coil_inner_diameter - 0.5) / 2.0;
+								const samplesPerMm = csvParams.sps / csvParams.scan_speed;
+								const halfWindow = Math.floor(samplesPerMm * effectiveRadius);
+								syncFitRange(halfWindow);
+							}
+							if (csvParams.peak_type) {
+								peakTypeSelect.value = csvParams.peak_type;
+							}
+							showScanInfo();
+						}
+
+						runFitFromCSV();
+					} catch (err) {
+						setMessage(err.message, true);
+					}
+				};
+				reader.readAsText(file);
+			}
+
+			function showScanInfo() {
+				if (!csvParams) { scanInfoDiv.style.display = "none"; return; }
+				const items = [];
+				if (csvParams.scan_length) items.push(`<span class="param-item">扫描距离: <span class="param-val">${csvParams.scan_length} mm</span></span>`);
+				if (csvParams.scan_speed) items.push(`<span class="param-item">扫描速度: <span class="param-val">${csvParams.scan_speed} mm/s</span></span>`);
+				if (csvParams.coil_inner_diameter) items.push(`<span class="param-item">线圈内径: <span class="param-val">${csvParams.coil_inner_diameter} mm</span></span>`);
+				if (csvParams.scan_height !== undefined) items.push(`<span class="param-item">扫描高度: <span class="param-val">${csvParams.scan_height} mm</span></span>`);
+				if (csvParams.sps) items.push(`<span class="param-item">采样率: <span class="param-val">${csvParams.sps} Hz</span></span>`);
+				if (csvParams.peak_type) items.push(`<span class="param-item">配置类型: <span class="param-val">${csvParams.peak_type}</span></span>`);
+				if (items.length) {
+					scanInfoDiv.innerHTML = items.join("");
+					scanInfoDiv.style.display = "block";
+				}
+			}
+
+			function showPeakInfo(peakXmm, peakYmm, peakFreq, peakPos) {
+				const items = [];
+				if (peakXmm !== undefined && peakYmm !== undefined) {
+					items.push(`<span class="param-item">峰值 X: <span class="param-val">${peakXmm.toFixed(4)} mm</span></span>`);
+					items.push(`<span class="param-item">峰值 Y: <span class="param-val">${peakYmm.toFixed(4)} mm</span></span>`);
+				}
+				if (peakFreq !== undefined) {
+					items.push(`<span class="param-item">峰值频率: <span class="param-val">${(peakFreq / 1000).toFixed(3)} KHz</span></span>`);
+				}
+				if (peakPos !== undefined) {
+					items.push(`<span class="param-item">距起点距离: <span class="param-val">${peakPos.toFixed(4)} mm</span></span>`);
+				}
+				if (items.length) {
+					peakInfoDiv.innerHTML = items.join("");
+					peakInfoDiv.style.display = "block";
+				} else {
+					peakInfoDiv.style.display = "none";
+				}
+			}
+
+			/* ========== 文件上传事件 ========== */
+
+			const uploadArea = document.getElementById("uploadArea");
+			const fileInput = document.getElementById("fileInput");
+
+			uploadArea.addEventListener("click", () => fileInput.click());
+			fileInput.addEventListener("change", (e) => {
+				if (e.target.files.length) handleCSVFile(e.target.files[0]);
+			});
+			uploadArea.addEventListener("dragover", (e) => {
+				e.preventDefault();
+				uploadArea.classList.add("dragover");
+			});
+			uploadArea.addEventListener("dragleave", () => {
+				uploadArea.classList.remove("dragover");
+			});
+			uploadArea.addEventListener("drop", (e) => {
+				e.preventDefault();
+				uploadArea.classList.remove("dragover");
+				if (e.dataTransfer.files.length) {
+					handleCSVFile(e.dataTransfer.files[0]);
+				}
+			});
+
+			/* ========== 数据解析工具 ========== */
+
+			function sortPoints(points) {
+				return [...points].sort((a, b) => a[0] - b[0]);
+			}
+
+			function formatSampleData(points) {
+				return points.map(([x, y]) => `${x}, ${y}`).join("\n");
+			}
+
+			function parseLinePoints(text) {
+				const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+				const points = lines.map((line, index) => {
+					const normalized = line.replace(/[，；;\t]+/g, " ").replace(/,/g, " ");
+					const parts = normalized.split(/\s+/).filter(Boolean);
+					if (parts.length < 2) throw new Error(`第 ${index + 1} 行格式不正确`);
+					const x = Number(parts[0]);
+					const y = Number(parts[1]);
+					if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error(`第 ${index + 1} 行包含无效数值`);
+					return [x, y];
+				});
+				return sortPoints(points);
+			}
+
+			function parseJsonPoints(text) {
+				let payload;
+				try { payload = JSON.parse(text); } catch { throw new Error("JSON 格式无效"); }
+				if (!Array.isArray(payload)) throw new Error("JSON 必须是数组格式");
+				const points = payload.map((entry, i) => {
+					if (Array.isArray(entry) && entry.length >= 2) return [Number(entry[0]), Number(entry[1])];
+					throw new Error(`第 ${i + 1} 项无效`);
+				});
+				return sortPoints(points);
+			}
+
+			function parsePoints(text) {
+				const trimmed = text.trim();
+				if (!trimmed) return [];
+				if (trimmed.startsWith("[") || trimmed.startsWith("{")) return parseJsonPoints(trimmed);
+				return parseLinePoints(trimmed);
+			}
+
+			function updateInputCountLabel() {
+				const trimmed = pointInput.value.trim();
+				if (!trimmed) { pointCountLabel.textContent = "0 个点"; return; }
+				try {
+					const points = parsePoints(trimmed);
+					pointCountLabel.textContent = `${points.length} 个点`;
+				} catch {
+					const lines = trimmed.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+					pointCountLabel.textContent = `${lines.length} 行`;
+				}
+			}
+
+			/* ========== 峰值检测算法（与插件一致） ========== */
+
+			/**
+			 * 自动检测信号是峰值形还是谷底形
+			 * 比较中心区域与边缘区域的频率均值：
+			 * - 中心高、边缘低 → peak（大线圈特征）
+			 * - 中心低、边缘高 → valley（小线圈特征）
+			 */
+			function autoDetectPeakType(freqData) {
+				const n = freqData.length;
+				// 边缘区域取前后 ~14% (n//7)
+				const edgeMargin = Math.max(1, Math.floor(n / 7));
+				const edgeFreqs = [...freqData.slice(0, edgeMargin), ...freqData.slice(-edgeMargin)];
+				const edgeAvg = edgeFreqs.reduce((a, b) => a + b, 0) / edgeFreqs.length;
+
+				// 中心区域取中间 30%
+				const centerStart = Math.floor(n * 35 / 100);
+				const centerEnd = Math.floor(n * 65 / 100);
+				const centerFreqs = freqData.slice(centerStart, Math.max(centerEnd, centerStart + 1));
+				const centerAvg = centerFreqs.reduce((a, b) => a + b, 0) / centerFreqs.length;
+
+				const detected = centerAvg > edgeAvg ? "peak" : "valley";
+				return { detected, centerAvg, edgeAvg };
+			}
+
+			/**
+			 * 在排除边缘区域后找到极值点索引
+			 * peak 模式找最大频率，valley 模式找最小频率
+			 */
+			function findExtremeIndex(freqData, peakType) {
+				const margin = Math.floor(freqData.length * 15 / 100);
+				const searchStart = Math.max(1, margin);
+				const searchEnd = Math.min(freqData.length - 1, freqData.length - margin);
+
+				const findMin = peakType === "valley";
+				let bestIdx = searchStart;
+				let bestFreq = freqData[searchStart];
+				for (let i = searchStart + 1; i < searchEnd; i++) {
+					if (findMin ? freqData[i] < bestFreq : freqData[i] > bestFreq) {
+						bestFreq = freqData[i];
+						bestIdx = i;
+					}
+				}
+				return bestIdx;
+			}
+
+			/**
+			 * 高斯加权抛物线拟合（与插件 _refine_peak_position 算法完全一致）
+			 * 在索引空间进行拟合，sigma=halfWindow/2.0，插值计算峰值坐标
+			 * @param {Array} windowData - 拟合窗口数据 [[pos, freq, ...], ...]
+			 * @param {number} peakLocalIdx - 极值点在窗口内的索引
+			 * @param {string} peakType - 'peak' 或 'valley'
+			 * @param {number} halfWindow - 拟合窗口半宽（样本点数，与插件一致）
+			 * @returns 拟合结果或 null
+			 */
+			function weightedParabolaFit(windowData, peakLocalIdx, peakType, halfWindow) {
+				const n = windowData.length;
+				if (n < 3) return null;
+
+				// 与插件一致：归一化到索引空间，峰值位置为 0
+				const xCoords = [];
+				const freqs = [];
+				const weights = [];
+
+				for (let i = 0; i < n; i++) {
+					const x_norm = i - peakLocalIdx;
+					xCoords.push(x_norm);
+					freqs.push(windowData[i][1]);
+
+					const sigma = halfWindow / 2.0;
+					const weight = Math.exp(-(x_norm * x_norm) / (2.0 * sigma * sigma));
+					weights.push(weight);
+				}
+
+				// 加权最小二乘法拟合 y = a*x² + b*x + c
+				let wSum = 0, wSumX = 0, wSumX2 = 0, wSumX3 = 0, wSumX4 = 0;
+				let wSumY = 0, wSumXY = 0, wSumX2Y = 0;
+
+				for (let i = 0; i < n; i++) {
+					const w = weights[i], x = xCoords[i], y = freqs[i];
+					const wx = w * x, wx2 = wx * x, wx3 = wx2 * x, wx4 = wx3 * x;
+					const wy = w * y, wxy = wx * y, wx2y = wx2 * y;
+					wSum += w; wSumX += wx; wSumX2 += wx2; wSumX3 += wx3; wSumX4 += wx4;
+					wSumY += wy; wSumXY += wxy; wSumX2Y += wx2y;
+				}
+
+				// Cramer 法则求解 3×3 线性方程组
+				const det = wSumX4 * (wSumX2 * wSum - wSumX * wSumX) -
+				            wSumX3 * (wSumX3 * wSum - wSumX * wSumX2) +
+				            wSumX2 * (wSumX3 * wSumX - wSumX2 * wSumX2);
+
+				if (Math.abs(det) < 1e-10) return null;
+
+				const detA = wSumX2Y * (wSumX2 * wSum - wSumX * wSumX) -
+				             wSumXY * (wSumX3 * wSum - wSumX * wSumX2) +
+				             wSumY * (wSumX3 * wSumX - wSumX2 * wSumX2);
+				const a = detA / det;
+
+				const detB = wSumX4 * (wSumXY * wSum - wSumX * wSumY) -
+				             wSumX3 * (wSumX2Y * wSum - wSumX * wSumY) +
+				             wSumX2 * (wSumX2Y * wSumX - wSumXY * wSumX2);
+				const b = detB / det;
+
+				const detC = wSumX4 * (wSumX2 * wSumY - wSumX * wSumXY) -
+				             wSumX3 * (wSumX3 * wSumY - wSumX * wSumX2Y) +
+				             wSumX2 * (wSumX3 * wSumXY - wSumX2 * wSumX2Y);
+				const c = detC / det;
+
+				// 校验抛物线开口方向
+				if (peakType === "valley" && a < 0) return null;
+				if (peakType === "peak" && a > 0) return null;
+				if (Math.abs(a) < 1e-10) return null;
+
+				// 加权 R²
+				const yPred = xCoords.map(x => a * x * x + b * x + c);
+				const wMean = wSumY / wSum;
+				let ssRes = 0, ssTot = 0;
+				for (let i = 0; i < n; i++) {
+					ssRes += weights[i] * Math.pow(freqs[i] - yPred[i], 2);
+					ssTot += weights[i] * Math.pow(freqs[i] - wMean, 2);
+				}
+				const r2 = ssTot > 0 ? 1 - ssRes / ssTot : 0;
+
+				// 与插件一致：在索引空间计算极值点
+				let x_peak = -b / (2.0 * a);
+				const max_offset = halfWindow * 0.5;
+				x_peak = Math.max(-max_offset, Math.min(max_offset, x_peak));
+
+				// 全局索引（窗口内）
+				const peak_global_idx = peakLocalIdx + x_peak;
+
+				// 插值计算实际坐标（与插件 _refine_peak_position 一致）
+				let peak_idx_floor = Math.floor(peak_global_idx);
+				if (peak_idx_floor < 0) peak_idx_floor = 0;
+				if (peak_idx_floor >= n - 1) peak_idx_floor = n - 2;
+				const t = peak_global_idx - peak_idx_floor;
+
+				const p1 = windowData[peak_idx_floor];
+				const p2 = windowData[peak_idx_floor + 1];
+				const peakPosition = p1[0] + t * (p2[0] - p1[0]);
+				const peakFreq = a * x_peak * x_peak + b * x_peak + c;
+				let peakXmm, peakYmm;
+				if (p1.length >= 4 && p2.length >= 4) {
+					peakXmm = p1[2] + t * (p2[2] - p1[2]);
+					peakYmm = p1[3] + t * (p2[3] - p1[3]);
+				}
+
+				// 将索引空间系数转换为 mm 空间系数（用于曲线显示）
+				const peakPosMm = windowData[peakLocalIdx][0];
+				let totalStep = 0;
+				for (let i = 1; i < n; i++) {
+					totalStep += Math.abs(windowData[i][0] - windowData[i - 1][0]);
+				}
+				const step_mm = n > 1 ? totalStep / (n - 1) : 1.0;
+				const aAbs = a / (step_mm * step_mm);
+				const bAbs = b / step_mm - 2 * aAbs * peakPosMm;
+				const cAbs = aAbs * peakPosMm * peakPosMm - (b / step_mm) * peakPosMm + c;
+
+				return { a: aAbs, b: bAbs, c: cAbs, r2, n, peakPosition, peakFreq, peakType, peakXmm, peakYmm };
+			}
+
+			/* ========== 拟合流程 ========== */
+
+			/**
+			 * 从 CSV 波形数据执行完整拟合流程（与插件算法一致）
+			 */
+			function runFitFromCSV() {
+				try {
+					if (!fullWaveformData || fullWaveformData.length < 10) {
+						throw new Error("数据点不足，至少需要 10 个点。");
+					}
+
+					const data = fullWaveformData;
+					const freqs = data.map(d => d[1]);
+
+					// 1. 确定峰值类型
+					let peakType = peakTypeSelect.value;
+					let autoInfo = null;
+					if (peakType === "auto") {
+						autoInfo = autoDetectPeakType(freqs);
+						peakType = autoInfo.detected;
+					}
+
+					// 更新检测类型显示
+					detectedType.textContent = peakType === "peak" ? "峰值型" : "谷底型";
+					detectedTypeBadge.textContent = peakType === "peak" ? "峰值" : "谷底";
+					detectedTypeBadge.className = "peak-type-badge " + peakType;
+					detectedTypeBadge.style.display = "inline-block";
+
+					// 2. 找到极值点（排除边缘 15%）
+					const peakIdx = findExtremeIndex(freqs, peakType);
+
+					// 3. 确定拟合窗口大小（fitRange 在导入 CSV 时已由参数自动设置）
+					const halfWindow = fitRange;
+
+					// 4. 提取窗口数据
+					const startIdx = Math.max(0, peakIdx - halfWindow);
+					const endIdx = Math.min(data.length, peakIdx + halfWindow + 1);
+					const windowData = data.slice(startIdx, endIdx);
+					const peakLocalIdx = peakIdx - startIdx;
+
+					if (windowData.length < 3) {
+						throw new Error("拟合窗口内数据点不足");
+					}
+
+					// 5. 高斯加权抛物线拟合（与插件一致：在索引空间拟合，sigma=halfWindow/2）
+					const result = weightedParabolaFit(windowData, peakLocalIdx, peakType, halfWindow);
+
+					if (!result) {
+						throw new Error("加权抛物线拟合失败，可能数据不适合抛物线模型");
+					}
+
+					// 6. 峰值 X,Y 坐标已由拟合函数插值计算
+					const peakXmm = result.peakXmm;
+					const peakYmm = result.peakYmm;
+
+					// 7. 生成拟合曲线数据
+					const curvePoints = buildCurve(windowData, result);
+
+					// 8. 更新显示
+					currentAllPoints = data;
+					updateSummaryFull(data.length, windowData.length, result, peakType, autoInfo);
+					showPeakInfo(peakXmm, peakYmm, result.peakFreq, result.peakPosition);
+
+					renderChartWithWaveform(data, windowData, curvePoints, result);
+
+					const typeLabel = peakType === "peak" ? "峰值" : "谷底";
+					let msg = `拟合完成。共 ${data.length} 个点，${typeLabel}位置 ${result.peakPosition.toFixed(4)} mm，` +
+					          `频率 ${(result.peakFreq / 1000).toFixed(3)} KHz，` +
+					          `拟合取第 ${startIdx + 1} ~ ${endIdx} 点（${windowData.length} 个点）。`;
+					if (autoInfo) {
+						msg += ` 自动检测: 中心均值=${(autoInfo.centerAvg / 1000).toFixed(1)}KHz, 边缘均值=${(autoInfo.edgeAvg / 1000).toFixed(1)}KHz。`;
+					}
+					setMessage(msg);
+				} catch (error) {
+					updateSummaryEmpty();
+					resetChart();
+					setMessage(error.message, true);
+				}
+			}
+
+			/**
+			 * 手动输入模式拟合
+			 */
+			function runFit() {
+				try {
+					const points = parsePoints(pointInput.value);
+					if (points.length < 3) throw new Error("至少需要 3 个数据点");
+
+					// 简单模式：用普通最小二乘
+					const result = fitQuadratic(points);
+					const curvePoints = buildCurve(points, result);
+
+					currentAllPoints = points;
+					updateSummary(points, result);
+					showPeakInfo(undefined, undefined, undefined, -result.b / (2 * result.a));
+					renderChart(points, curvePoints);
+					setMessage(`拟合完成，已处理 ${points.length} 个点。`);
+				} catch (error) {
+					updateSummaryEmpty();
+					resetChart();
+					setMessage(error.message, true);
+				}
+			}
+
+			/* ========== 简单最小二乘拟合（手动输入模式） ========== */
+
+			function solveLinearSystem(matrix, vector) {
+				const size = vector.length;
+				const augmented = matrix.map((row, i) => [...row, vector[i]]);
+				for (let pivot = 0; pivot < size; pivot++) {
+					let maxRow = pivot;
+					for (let row = pivot + 1; row < size; row++) {
+						if (Math.abs(augmented[row][pivot]) > Math.abs(augmented[maxRow][pivot])) maxRow = row;
+					}
+					if (Math.abs(augmented[maxRow][pivot]) < 1e-12) throw new Error("数据不足以稳定拟合");
+					[augmented[pivot], augmented[maxRow]] = [augmented[maxRow], augmented[pivot]];
+					const pv = augmented[pivot][pivot];
+					for (let col = pivot; col <= size; col++) augmented[pivot][col] /= pv;
+					for (let row = 0; row < size; row++) {
+						if (row === pivot) continue;
+						const factor = augmented[row][pivot];
+						for (let col = pivot; col <= size; col++) augmented[row][col] -= factor * augmented[pivot][col];
+					}
+				}
+				return augmented.map(row => row[size]);
+			}
+
+			function fitQuadratic(points) {
+				if (points.length < 3) throw new Error("至少需要 3 个点");
+				const centerX = points.reduce((s, [x]) => s + x, 0) / points.length;
+				let sX = 0, sX2 = 0, sX3 = 0, sX4 = 0, sY = 0, sXY = 0, sX2Y = 0;
+				for (const [x, y] of points) {
+					const dx = x - centerX, dx2 = dx * dx;
+					sX += dx; sX2 += dx2; sX3 += dx2 * dx; sX4 += dx2 * dx2;
+					sY += y; sXY += dx * y; sX2Y += dx2 * y;
+				}
+				const [sa, sb, sc] = solveLinearSystem(
+					[[sX4, sX3, sX2], [sX3, sX2, sX], [sX2, sX, points.length]],
+					[sX2Y, sXY, sY]
+				);
+				const a = sa, b = sb - 2 * sa * centerX, c = sa * centerX * centerX - sb * centerX + sc;
+				const avgY = sY / points.length;
+				let ssRes = 0, ssTot = 0;
+				for (const [x, y] of points) {
+					const pred = a * x * x + b * x + c;
+					ssRes += (y - pred) ** 2;
+					ssTot += (y - avgY) ** 2;
+				}
+				return { a, b, c, r2: ssTot > 0 ? 1 - ssRes / ssTot : 1 };
+			}
+
+			/* ========== 拟合曲线生成 ========== */
+
+			function buildCurve(points, coefficients) {
+				const xValues = points.map(([x]) => x);
+				const minX = Math.min(...xValues);
+				const maxX = Math.max(...xValues);
+				const span = Math.max(maxX - minX, 1);
+				const samples = Math.min(1200, Math.max(160, points.length * 3));
+				const step = span / (samples - 1);
+				return Array.from({ length: samples }, (_, i) => {
+					const x = minX + step * i;
+					return [x, coefficients.a * x * x + coefficients.b * x + coefficients.c];
+				});
+			}
+
+			/* ========== 图表渲染 ========== */
+
+			function buildAxisRange(values) {
+				const minV = Math.min(...values), maxV = Math.max(...values);
+				const span = maxV - minV;
+				if (span === 0) { const pad = Math.max(Math.abs(minV) * 0.2, 1); return { min: minV - pad, max: maxV + pad }; }
+				const pad = span * 0.2;
+				return { min: minV - pad, max: maxV + pad };
+			}
+
+			function formatCoefficient(value) {
+				if (Math.abs(value) < 1e-10) return "0";
+				return Number(value.toFixed(6)).toString();
+			}
+
+			function updateSummaryFull(totalPts, fitPts, result, peakType, autoInfo) {
+				pointCount.textContent = String(totalPts);
+				pointCountLabel.textContent = `${totalPts} 个点`;
+				rSquared.textContent = result ? result.r2.toFixed(6) : "-";
+				detectedType.textContent = peakType === "peak" ? "峰值型" : "谷底型";
+				peakPosition.textContent = result ? result.peakPosition.toFixed(4) + " mm" : "-";
+
+				if (!result) { equationText.textContent = "等待输入数据"; return; }
+
+				const a = formatCoefficient(result.a);
+				const b = formatCoefficient(result.b);
+				const c = formatCoefficient(result.c);
+				equationText.innerHTML =
+					`y = ${a}x² ${result.b >= 0 ? "+" : "−"} ${formatCoefficient(Math.abs(result.b))}x ${result.c >= 0 ? "+" : "−"} ${formatCoefficient(Math.abs(result.c))}` +
+					`<br><span style="font-size:12px;color:var(--muted)">拟合 ${fitPts} 个点, 类型: ${peakType === "peak" ? "峰值" : "谷底"}</span>`;
+			}
+
+			function updateSummary(points, result) {
+				pointCount.textContent = String(points.length);
+				pointCountLabel.textContent = `${points.length} 个点`;
+				rSquared.textContent = result ? result.r2.toFixed(6) : "-";
+				detectedType.textContent = "-";
+				peakPosition.textContent = result ? (-result.b / (2 * result.a)).toFixed(4) + " mm" : "-";
+				if (!result) { equationText.textContent = "等待输入数据"; return; }
+				const a = formatCoefficient(result.a), b = formatCoefficient(result.b), c = formatCoefficient(result.c);
+				equationText.textContent = `y = ${a}x² ${result.b >= 0 ? "+" : "−"} ${formatCoefficient(Math.abs(result.b))}x ${result.c >= 0 ? "+" : "−"} ${formatCoefficient(Math.abs(result.c))}`;
+			}
+
+			function updateSummaryEmpty() {
+				pointCount.textContent = "0";
+				pointCountLabel.textContent = "0 个点";
+				rSquared.textContent = "-";
+				detectedType.textContent = "-";
+				peakPosition.textContent = "-";
+				equationText.textContent = "等待输入数据";
+				detectedTypeBadge.style.display = "none";
+				peakInfoDiv.style.display = "none";
+			}
+
+			function renderChartWithWaveform(allPoints, fitRegion, curvePoints, fitResult) {
+				const allY = allPoints.map(([, y]) => y);
+				const allX = allPoints.map(([x]) => x);
+				const curveY = curvePoints.map(([, y]) => y);
+				const xRange = buildAxisRange(allX);
+				const yRange = buildAxisRange([...allY, ...curveY]);
+				const largeDataset = allPoints.length >= 300;
+
+				// 峰值标记点
+				const peakMark = fitResult ? [
+					[fitResult.peakPosition, fitResult.peakFreq]
+				] : [];
+
+				chart.setOption({
+					title: { show: false },
+					animation: false,
+					animationDuration: largeDataset ? 0 : 500,
+					color: ["#2563eb", "#16a34a", "#c2410c", "#dc2626"],
+					tooltip: {
+						animation: false,
+						trigger: "axis",
+						axisPointer: {
+							type: "cross",
+							label: {
+								show: true,
+								fontSize: 16,
+								formatter: function (params) {
+									if (params.axisDimension == 'y') return (params.value / 1000).toFixed(3);
+									return params.value.toFixed(3);
+								}
+							},
+						},
+						formatter: params => {
+							const p = params.find(p => p.seriesName === '波形数据') || params[0];
+							if (!p || !Array.isArray(p.value)) return '';
+							const L = p.value[0];
+							const freq = p.value[1];
+							const xMm = p.value[2];
+							const yMm = p.value[3];
+							let html = 'L: ' + L.toFixed(4) + ' mm';
+							if (xMm !== undefined && yMm !== undefined) {
+								html += '<br/>X: ' + xMm.toFixed(4) + ' mm';
+								html += '<br/>Y: ' + yMm.toFixed(4) + ' mm';
+							}
+							html += '<br/>频率: ' + (freq / 1000).toFixed(3) + ' KHz';
+							return html;
+						}
+					},
+					legend: {
+						type: 'plain',
+						icon: "rect",
+						left: 450,
+						align: 'left',
+						top: 8,
+						textStyle: { color: "#5f5347" }
+					},
+					grid: { top: 56, left: 75, right: 28, bottom: 48 },
+					xAxis: {
+						type: "value",
+						show: true,
+						scale: true,
+						name: "扫描距离 (mm)",
+						nameTextStyle: { fontSize: 16, color: '#000' },
+						min: xRange.min,
+						max: xRange.max,
+						nameLocation: "middle",
+						nameGap: 28,
+						axisLabel: { formatter: v => v.toFixed(3) },
+						splitLine: { lineStyle: { color: "rgba(116, 104, 91, 0.12)" } },
+						axisLine: { lineStyle: { color: "#8b7c6a" } }
+					},
+					yAxis: {
+						type: "value",
+						show: true,
+						scale: true,
+						name: "频率 (KHz)",
+						nameTextStyle: { fontSize: 16, color: '#000', align: "left", verticalAlign: "bottom" },
+						min: yRange.min,
+						max: yRange.max,
+						nameLocation: "end",
+						nameGap: 12,
+						axisLabel: { formatter: v => (v / 1000).toFixed(3) },
+						splitLine: { lineStyle: { color: "rgba(116, 104, 91, 0.12)" } },
+						axisLine: { lineStyle: { color: "#8b7c6a" } },
+						splitNumber: 5,
+						minorTick: { show: true },
+						minorSplitLine: { show: false },
+					},
+					series: [
+						{
+							name: "波形数据",
+							type: "line",
+							symbol: "none",
+							smooth: true,
+							lineStyle: { width: 2, color: "#2563eb" },
+							areaStyle: {
+								color: {
+									type: "linear", x: 0, y: 0, x2: 0, y2: 1,
+									colorStops: [
+										{ offset: 0, color: "rgba(37, 99, 235, 0.15)" },
+										{ offset: 1, color: "rgba(37, 99, 235, 0.02)" }
+									]
+								}
+							},
+							data: allPoints.map(pt => pt.length >= 4 ? [pt[0], pt[1], pt[2], pt[3]] : [pt[0], pt[1]])
+						},
+						{
+							name: "拟合区域",
+							type: "scatter",
+							symbolSize: largeDataset ? 4 : 7,
+							itemStyle: { color: "#16a34a", borderColor: "#ffffff", borderWidth: 1 },
+							data: fitRegion.map(([x, y]) => [x, y])
+						},
+						{
+							name: "拟合曲线",
+							type: "line",
+							smooth: true,
+							showSymbol: false,
+							lineStyle: { width: 3, color: "#c2410c" },
+							data: curvePoints
+						},
+						{
+							name: "峰值点",
+							type: "scatter",
+							symbolSize: 14,
+							itemStyle: { color: "#dc2626", borderColor: "#fff", borderWidth: 2 },
+							data: peakMark
+						}
+					]
+				});
+			}
+
+			function renderChart(points, curvePoints) {
+				const largeDataset = points.length >= 300;
+				const xRange = buildAxisRange(points.map(([x]) => x));
+				const yRange = buildAxisRange([
+					...points.map(([, y]) => y),
+					...curvePoints.map(([, y]) => y)
+				]);
+
+				chart.setOption({
+					title: { show: false },
+					animation: false,
+					animationDuration: largeDataset ? 0 : 500,
+					color: ["#2563eb", "#c2410c"],
+					tooltip: {
+						animation: false,
+						trigger: "axis",
+						axisPointer: {
+							type: "cross",
+							label: {
+								show: true,
+								fontSize: 16,
+								formatter: function (params) {
+									if (params.axisDimension == 'y') return (params.value / 1000).toFixed(3);
+									return params.value.toFixed(3);
+								}
+							},
+						},
+						formatter: params => {
+							const p = params.find(p => p.seriesName === '波形数据') || params[0];
+							if (!p || !Array.isArray(p.value)) return '';
+							const L = p.value[0];
+							const freq = p.value[1];
+							const xMm = p.value[2];
+							const yMm = p.value[3];
+							let html = 'L: ' + L.toFixed(4) + ' mm';
+							if (xMm !== undefined && yMm !== undefined) {
+								html += '<br/>X: ' + xMm.toFixed(4) + ' mm';
+								html += '<br/>Y: ' + yMm.toFixed(4) + ' mm';
+							}
+							html += '<br/>频率: ' + (freq / 1000).toFixed(3) + ' KHz';
+							return html;
+						}
+					},
+					legend: { top: 8, textStyle: { color: "#5f5347" } },
+					grid: { top: 56, left: 75, right: 28, bottom: 48 },
+					xAxis: {
+						type: "value", show: true, scale: true, name: "扫描距离 (mm)",
+						min: xRange.min, max: xRange.max,
+						nameLocation: "middle", nameGap: 28,
+						axisLabel: { formatter: v => v.toFixed(3) },
+						splitLine: { lineStyle: { color: "rgba(116, 104, 91, 0.12)" } },
+						axisLine: { lineStyle: { color: "#8b7c6a" } }
+					},
+					yAxis: {
+						type: "value", show: true, scale: true, name: "频率 (KHz)",
+						min: yRange.min, max: yRange.max,
+						nameLocation: "end", nameTextStyle: { align: "left", verticalAlign: "bottom" }, nameGap: 42,
+						axisLabel: { formatter: v => (v / 1000).toFixed(3) },
+						splitLine: { lineStyle: { color: "rgba(116, 104, 91, 0.12)" } },
+						axisLine: { lineStyle: { color: "#8b7c6a" } }
+					},
+					series: [
+						{
+							name: "输入数据", type: "scatter",
+							symbolSize: largeDataset ? 6 : 10,
+							large: largeDataset, progressive: 1000, progressiveThreshold: 800,
+							itemStyle: { color: "#2563eb", borderColor: "#ffffff", borderWidth: 1.5 },
+							data: points
+						},
+						{
+							name: "拟合曲线", type: "line", smooth: true, showSymbol: false,
+							lineStyle: { width: 3, color: "#c2410c" },
+							data: curvePoints
+						}
+					]
+				});
+			}
+
+			function resetChart() {
+				chart.setOption({
+					title: { text: "等待数据输入", left: "center", top: "middle", textStyle: { color: "#9a8c7d", fontWeight: 500, fontSize: 18 } },
+					xAxis: { type: "value", show: false },
+					yAxis: { type: "value", show: false },
+					series: []
+				}, true);
+			}
+
+			function setMessage(text, isError = false) {
+				message.textContent = text;
+				message.className = isError ? "message error" : "message";
+			}
+
+			/* ========== 拟合点数控制 ========== */
+
+			const fitRangeSlider = document.getElementById("fitRangeSlider");
+			const fitRangeInput = document.getElementById("fitRangeInput");
+			const fitRangeValue = document.getElementById("fitRangeValue");
+
+			function syncFitRange(val) {
+				val = Math.max(1, parseInt(val) || 1);
+				fitRange = val;
+				fitRangeSlider.value = Math.min(val, 500);
+				fitRangeInput.value = val;
+				fitRangeValue.textContent = val;
+			}
+
+			function onFitRangeChange(val) {
+				syncFitRange(val);
+				if (fullWaveformData && fullWaveformData.length > 0) {
+					runFitFromCSV();
+				} else if (pointInput.value.trim()) {
+					runFit();
+				}
+			}
+
+			fitRangeSlider.addEventListener("input", (e) => onFitRangeChange(e.target.value));
+			fitRangeInput.addEventListener("change", (e) => onFitRangeChange(e.target.value));
+
+			/* ========== 峰值类型选择 ========== */
+
+			peakTypeSelect.addEventListener("change", () => {
+				if (fullWaveformData && fullWaveformData.length > 0) {
+					runFitFromCSV();
+				}
+			});
+
+			/* ========== 事件绑定 ========== */
+
+			document.getElementById("fitButton").addEventListener("click", () => {
+				if (fullWaveformData && fullWaveformData.length > 0) {
+					runFitFromCSV();
+				} else {
+					runFit();
+				}
+			});
+
+			document.getElementById("sampleButton").addEventListener("click", () => {
+				fullWaveformData = null;
+				csvParams = null;
+				scanInfoDiv.style.display = "none";
+				pointInput.value = formatSampleData(samplePoints);
+				updateInputCountLabel();
+				runFit();
+			});
+
+			document.getElementById("clearButton").addEventListener("click", () => {
+				fullWaveformData = null;
+				csvParams = null;
+				pointInput.value = "";
+				updateInputCountLabel();
+				updateSummaryEmpty();
+				resetChart();
+				setMessage("已清空数据。导入 CSV 文件或手动输入后重新拟合。");
+				document.getElementById("fileInfo").textContent = ".csv";
+				document.getElementById("fileInfo").classList.remove("loaded");
+				scanInfoDiv.style.display = "none";
+				peakInfoDiv.style.display = "none";
+			});
+
+			pointInput.addEventListener("input", () => updateInputCountLabel());
+			window.addEventListener("resize", () => chart.resize());
+
+			/* ========== Shift+滚轮缩放Y轴 / 普通滚轮缩放X轴 ========== */
+
+			let shiftHeld = false;
+			document.addEventListener("keydown", (e) => { if (e.key === "Shift") shiftHeld = true; });
+			document.addEventListener("keyup", (e) => { if (e.key === "Shift") shiftHeld = false; });
+
+			document.getElementById("chart").addEventListener("wheel", (e) => {
+				e.preventDefault();
+				const option = chart.getOption();
+				if (!option || !option.xAxis || !option.yAxis) return;
+				const factor = e.deltaY > 0 ? 1.12 : 1 / 1.12;
+				const rect = e.currentTarget.getBoundingClientRect();
+				const mouseX = e.clientX - rect.left;
+				const mouseY = e.clientY - rect.top;
+				const MIN_VISIBLE = 20;
+
+				function countInRange(minV, maxV, axis) {
+					let count = 0;
+					for (const pt of currentAllPoints) {
+						const v = axis === "x" ? pt[0] : pt[1];
+						if (v >= minV && v <= maxV) count++;
+					}
+					return count;
+				}
+
+				if (shiftHeld) {
+					const yOpt = option.yAxis[0];
+					if (yOpt.min == null || yOpt.max == null) return;
+					const yData = chart.convertFromPixel({ yAxisIndex: 0 }, mouseY);
+					const ratio = (yData - yOpt.min) / (yOpt.max - yOpt.min);
+					const newSpan = (yOpt.max - yOpt.min) * factor;
+					const newMin = yData - newSpan * ratio;
+					const newMax = yData + newSpan * (1 - ratio);
+					if (countInRange(newMin, newMax, "y") < MIN_VISIBLE) return;
+					chart.setOption({ yAxis: { min: newMin, max: newMax } });
+				} else {
+					const xOpt = option.xAxis[0];
+					if (xOpt.min == null || xOpt.max == null) return;
+					const xData = chart.convertFromPixel({ xAxisIndex: 0 }, mouseX);
+					const ratio = (xData - xOpt.min) / (xOpt.max - xOpt.min);
+					const newSpan = (xOpt.max - xOpt.min) * factor;
+					const newMin = xData - newSpan * ratio;
+					const newMax = xData + newSpan * (1 - ratio);
+					if (countInRange(newMin, newMax, "x") < MIN_VISIBLE) return;
+					chart.setOption({ xAxis: { min: newMin, max: newMax } });
+				}
+			}, { passive: false });
+
+			document.getElementById("chart").addEventListener("dblclick", () => {
+				if (fullWaveformData && fullWaveformData.length > 0) runFitFromCSV();
+				else runFit();
+			});
+
+			/* ========== 鼠标左键拖拽平移 ========== */
+
+			let isDragging = false, dragLastX = 0, dragLastY = 0;
+			const chartDom = document.getElementById("chart");
+
+			chartDom.addEventListener("mousedown", (e) => {
+				if (e.button !== 0) return;
+				isDragging = true;
+				dragLastX = e.clientX;
+				dragLastY = e.clientY;
+				e.preventDefault();
+			});
+
+			document.addEventListener("mousemove", (e) => {
+				if (!isDragging) return;
+				const dx = e.clientX - dragLastX;
+				const dy = e.clientY - dragLastY;
+				dragLastX = e.clientX;
+				dragLastY = e.clientY;
+
+				const option = chart.getOption();
+				if (!option || !option.xAxis || !option.yAxis) return;
+				const xOpt = option.xAxis[0], yOpt = option.yAxis[0];
+				if (xOpt.min == null || xOpt.max == null || yOpt.min == null || yOpt.max == null) return;
+
+				const xSpan = xOpt.max - xOpt.min;
+				const ySpan = yOpt.max - yOpt.min;
+				const grid = option.grid && option.grid[0] || {};
+				const xDataPerPx = xSpan / (chartDom.clientWidth - (grid.left || 64) - (grid.right || 28));
+				const yDataPerPx = ySpan / (chartDom.clientHeight - (grid.top || 56) - (grid.bottom || 48));
+
+				chart.setOption({
+					xAxis: { min: xOpt.min - dx * xDataPerPx, max: xOpt.max - dx * xDataPerPx },
+					yAxis: { min: yOpt.min + dy * yDataPerPx, max: yOpt.max + dy * yDataPerPx }
+				});
+			});
+
+			document.addEventListener("mouseup", () => { isDragging = false; });
+
+			// 初始化示例数据
+			pointInput.value = formatSampleData(samplePoints);
+			updateInputCountLabel();
+			runFit();
+		</script>
+	</body>
+
+</html>
