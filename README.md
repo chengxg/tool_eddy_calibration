@@ -202,6 +202,8 @@ $ TEST_LDC1612
 4. **查看结果**：运行 `GET_TOOL_CENTER TOOL=0` 获取中心坐标
 5. **多工具校准**：切换工具后重复步骤 3–4
 
+> `CALIBRATE_TOOL TOOL=n` 使用当前 Klippy 会话中的 T0 结果计算相对偏移；Klippy 重启后，请先重新执行 `CALIBRATE_TOOL TOOL=0`。
+
 ![命令执行](img/命令执行.png)
 
 ---
