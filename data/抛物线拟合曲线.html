@@ -5,7 +5,7 @@
 		<meta charset="UTF-8">
 		<meta name="viewport" content="width=device-width, initial-scale=1.0">
 		<title>抛物线拟合曲线工具</title>
-		<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+		<script src="https://cdn.bootcdn.net/ajax/libs/echarts/6.1.0/echarts.min.js"></script>
 		<style>
 			:root {
 				color-scheme: light;
@@ -158,6 +158,29 @@
 				background: rgba(255, 255, 255, 0.72);
 				outline: none;
 				transition: border-color 0.2s ease, box-shadow 0.2s ease;
+			}
+
+			.klipper-loader {
+				padding: 12px;
+				border: 1px solid var(--line);
+				border-radius: 18px;
+				background: rgba(255, 255, 255, 0.5);
+			}
+
+			.klipper-loader input {
+				min-width: 0;
+				flex: 1;
+				padding: 8px 10px;
+				border: 1px solid var(--line);
+				border-radius: 10px;
+				color: var(--text);
+				background: rgba(255, 255, 255, 0.72);
+				outline: none;
+			}
+
+			.klipper-loader button {
+				padding: 8px 12px;
+				white-space: nowrap;
 			}
 
 			.input-row .pointInput-wrap:hover {
@@ -395,6 +418,18 @@
 					</div>
 				</div>
 
+				<div class="klipper-loader">
+					<div class="label"><span>从 Klipper 读取扫描文件</span></div>
+					<div class="input-row">
+						<input id="klipperUrlInput" type="url" placeholder="http://主机地址:7125">
+						<input id="klipperFileInput" type="text"
+							value="tool_eddy_calibration/tool_eddy_scan_Scan_0.csv"
+							placeholder="tool_eddy_calibration/扫描文件.csv">
+						<button id="loadKlipperFileButton" class="secondary">读取</button>
+					</div>
+					<div class="file-info">通过 Moonraker config 文件接口读取；Klipper 地址与网页不同源时需允许 CORS。</div>
+				</div>
+
 				<div class="label">
 					<span>峰值类型</span>
 				</div>
@@ -493,6 +528,9 @@
 			const peakInfoDiv = document.getElementById("peakInfo");
 			const peakTypeSelect = document.getElementById("peakTypeSelect");
 			const detectedTypeBadge = document.getElementById("detectedTypeBadge");
+			const klipperUrlInput = document.getElementById("klipperUrlInput");
+			const klipperFileInput = document.getElementById("klipperFileInput");
+			const loadKlipperFileButton = document.getElementById("loadKlipperFileButton");
 			const chart = echarts.init(document.getElementById("chart"));
 
 			/* ========== CSV 解析 ========== */
@@ -591,47 +629,75 @@
 
 				const reader = new FileReader();
 				reader.onload = (e) => {
-					try {
-						const data = parseCSV(e.target.result);
-						if (!data || data.length < 10) {
-							throw new Error("数据点不足，至少需要 10 个有效样本");
-						}
-
-						fullWaveformData = sortPoints(data);
-
-						// 填入文本框
-						pointInput.value = fullWaveformData.map(pt => {
-							if (pt.length >= 4) {
-								return `${pt[0].toFixed(4)}, ${pt[1].toFixed(1)}, ${pt[2].toFixed(4)}, ${pt[3].toFixed(4)}`;
-							}
-							return `${pt[0].toFixed(4)}, ${pt[1].toFixed(1)}`;
-						}).join("\n");
-						updateInputCountLabel();
-
-						document.getElementById("fileInfo").textContent =
-							`${file.name} (${data.length} 点)`;
-						document.getElementById("fileInfo").classList.add("loaded");
-
-						// 从 CSV 参数自动设置 fitRange 和 peak_type
-						if (csvParams) {
-							if (csvParams.coil_inner_diameter && csvParams.sps && csvParams.scan_speed) {
-								const effectiveRadius = (csvParams.coil_inner_diameter - 0.5) / 2.0;
-								const samplesPerMm = csvParams.sps / csvParams.scan_speed;
-								const halfWindow = Math.floor(samplesPerMm * effectiveRadius);
-								syncFitRange(halfWindow);
-							}
-							if (csvParams.peak_type) {
-								peakTypeSelect.value = csvParams.peak_type;
-							}
-							showScanInfo();
-						}
-
-						runFitFromCSV();
-					} catch (err) {
-						setMessage(err.message, true);
-					}
+					loadCSVText(e.target.result, file.name);
 				};
 				reader.readAsText(file);
+			}
+
+			function loadCSVText(text, sourceName) {
+				try {
+					const data = parseCSV(text);
+					if (!data || data.length < 10) {
+						throw new Error("数据点不足，至少需要 10 个有效样本");
+					}
+
+					fullWaveformData = sortPoints(data);
+					pointInput.value = fullWaveformData.map(pt => {
+						if (pt.length >= 4) {
+							return `${pt[0].toFixed(4)}, ${pt[1].toFixed(1)}, ${pt[2].toFixed(4)}, ${pt[3].toFixed(4)}`;
+						}
+						return `${pt[0].toFixed(4)}, ${pt[1].toFixed(1)}`;
+					}).join("\n");
+					updateInputCountLabel();
+
+					document.getElementById("fileInfo").textContent =
+						`${sourceName} (${data.length} 点)`;
+					document.getElementById("fileInfo").classList.add("loaded");
+
+					if (csvParams) {
+						if (csvParams.coil_inner_diameter && csvParams.sps && csvParams.scan_speed) {
+							const effectiveRadius = (csvParams.coil_inner_diameter - 0.5) / 2.0;
+							const samplesPerMm = csvParams.sps / csvParams.scan_speed;
+							syncFitRange(Math.floor(samplesPerMm * effectiveRadius));
+						}
+						if (csvParams.peak_type) {
+							peakTypeSelect.value = csvParams.peak_type;
+						}
+						showScanInfo();
+					}
+					runFitFromCSV();
+				} catch (err) {
+					setMessage(err.message, true);
+				}
+			}
+
+			async function loadKlipperCSV() {
+				const baseUrl = klipperUrlInput.value.trim().replace(/\/+$/, "");
+				const filePath = klipperFileInput.value.trim().replace(/^\/+/, "");
+				if (!baseUrl || !filePath) {
+					setMessage("请填写 Klipper/Moonraker 地址和扫描文件路径", true);
+					return;
+				}
+				if (filePath.split("/").some(part => part === "..")) {
+					setMessage("扫描文件路径不能包含 ..", true);
+					return;
+				}
+
+				const encodedPath = filePath.split("/").map(encodeURIComponent).join("/");
+				const url = `${baseUrl}/server/files/config/${encodedPath}`;
+				loadKlipperFileButton.disabled = true;
+				setMessage("正在从 Klipper 读取扫描文件...");
+				try {
+					const response = await fetch(url);
+					if (!response.ok) {
+						throw new Error(`读取失败（HTTP ${response.status}）：${url}`);
+					}
+					loadCSVText(await response.text(), filePath);
+				} catch (err) {
+					setMessage(`${err.message}。请确认 Moonraker 地址、文件路径和 CORS 配置。`, true);
+				} finally {
+					loadKlipperFileButton.disabled = false;
+				}
 			}
 
 			function showScanInfo() {
@@ -692,6 +758,7 @@
 					handleCSVFile(e.dataTransfer.files[0]);
 				}
 			});
+			loadKlipperFileButton.addEventListener("click", loadKlipperCSV);
 
 			/* ========== 数据解析工具 ========== */
 
