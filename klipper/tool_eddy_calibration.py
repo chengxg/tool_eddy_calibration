@@ -11,27 +11,63 @@
 #          - 线圈中心由 REGION 光栅搜索 (TOOL_EDDY_FIND_COIL) 定位,
 #            经 G-code SAVE_VARIABLE 持久化, 校准时以 CENTER_XY 显式传入
 #          - 单线圈模块兼容: coil_z 可选, 只配实际接线通道的参数
-#          - 可信度判定: trusted/fitR2/deviation/edgeScans, 拟合 R² 须落在
-#            [trust_min_r2, trust_max_r2) 且峰值不贴扫描线边缘
+#          - 可信度判定: trusted/fitR2/deviation/edgeScans, trust_min_r2 <= R² < 1.0
+#            且峰值不贴扫描线边缘
 #          - 峰值搜索以扫描中段为基准, 抑制两侧杂散峰
 #          - 修正抛物线拟合 b 系数行列式展开 (窗口截断时结果错误),
 #            顶点越界按拟合失败处理不再钳制
 #          - 扫描线/搜索区域自动钳制到运动学行程范围 (整线平移不截断),
 #            粗中心贴区域边缘时不再 Move out of range
 #          - Z 偏移由外部 tap 提供 (SET_TOOL_Z / [probe] 等)
+# version: V2.0.1 2026-10-26 修正采样时间到位置的映射，使用 Klipper 实际规划的运动轨迹
+# version: V2.1.0 2026-10-27 TOOL_EDDY_FIND_COIL 支持 SCAN_HEIGHT_OFFSET
+#          (与 TOOL_EDDY_CALIBRATE 同一扫描高度形式, 含下限钳制),
+#          光栅进入直接降到扫描平面, 不再经 safe_z 中转
+# version: V2.2.0 2026-11-01 校准流程重构:
+#          - TOOL_EDDY_CALIBRATE 改两段式: 先 ITERATIONS 轮中心迭代
+#            (每轮单扫, 以上一轮结果为基点), 再固定最终基点 REPEATS 次
+#            终测取平均并输出 Final repeat result; ITERATIONS 允许 0
+#            (跳过迭代, 直接以传入 CENTER_XY 终测一轮)
+#          - FIND_COIL 光栅粗扫改多候选: 由单全局极值改为局部闭合峰/谷
+#            候选生成 (依据中心与周围环带的响应差), 正交精扫逐个复核,
+#            最多尝试 3 个候选, 杂散响应鲁棒性提升
+#          - 可信度判定移除 trust_max_r2 配置项, 统一为
+#            trust_min_r2 <= R² < 1.0 (R²>=1.0 视为异常);
+#            trust_min_r2 默认 0.996 -> 0.994, 且 >=1.0 时直接报配置错误
+#          - SET_TOOL_Z 新增可选 CENTER_XY=x,y: 一并记录 tap 所用的
+#            扫描中心 (仅作回显记录, 校准结果由 TOOL_EDDY_CALIBRATE 覆写)
 # 安装方式: 见仓库 install.sh 与 README.md (git clone 后 ./install.sh)
 #
 # Copyright (C) 2026  b站-仁泉之子
 # 本文件可在 GNU GPLv3 许可证条款下分发。
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging, math, os, time
+from typing import TYPE_CHECKING, List, Optional, Sequence, cast
 from . import ldc1612
 
 # 插件版本, TOOL_EDDY_VERSION 命令与 get_status 可查询, 用于确认更新是否生效
-TOOL_EDDY_VERSION = "2.0.0"
+TOOL_EDDY_VERSION = "2.2.0"
 
-# 大范围找线圈: 响应极值偏离背景中位数的最低幅度 (Hz), 低于它视为区域内无线圈
+# 大范围找线圈: 中心与周围环带的最低响应差 (Hz)
 FIND_COIL_MIN_RESPONSE_HZ = 50.0
+FIND_COIL_MAX_CANDIDATES = 3
+
+
+if TYPE_CHECKING:
+    from typing import Protocol
+
+    class _KlipperScanMove(Protocol):
+        accel_t: float
+        cruise_t: float
+        decel_t: float
+        start_v: float
+        cruise_v: float
+        accel: float
+        move_d: float
+        start_pos: Sequence[float]
+        axes_r: Sequence[float]
+else:
+    _KlipperScanMove = object
 
 
 def ensure_homed(printer, gcmd):
@@ -154,16 +190,15 @@ class ToolEddyCalibration:
         self.scan_safe_z = config.getfloat('scan_safe_z', 2.0, minval=0.5, maxval=10.0)
 
         # 校准结果可信度判定 (结果写入 last_result 的 trusted/fitR2/deviation):
-        # 结果偏离预扫描中心超过 trust_max_deviation、任一方向拟合度不在
-        # [trust_min_r2, trust_max_r2) 区间 (拟合太差或好到近乎无噪声, 均
-        # 视为异常)、或峰值落在扫描线边缘 (距端点不足 trust_edge_margin,
+        # 结果偏离预扫描中心超过 trust_max_deviation、任一方向拟合度低于
+        # trust_min_r2 (拟合质量不足)、或峰值落在扫描线边缘 (距端点不足 trust_edge_margin,
         # 此时峰值可能被截断, 拟合度再高也不可用) 均判为不可信
         self.trust_max_deviation = config.getfloat('trust_max_deviation', 1.0,
                                                     minval=0.05, maxval=10.0)
-        self.trust_min_r2 = config.getfloat('trust_min_r2', 0.996,
+        self.trust_min_r2 = config.getfloat('trust_min_r2', 0.994,
                                              minval=0.0, maxval=1.0)
-        self.trust_max_r2 = config.getfloat('trust_max_r2', 1.0,
-                                             minval=0.0, maxval=1.0)
+        if self.trust_min_r2 >= 1.0:
+            raise config.error("trust_min_r2 must be less than 1.0")
         self.trust_edge_margin = config.getfloat('trust_edge_margin', 1.0,
                                                   minval=0.1, maxval=10.0)
 
@@ -258,7 +293,11 @@ class ToolEddyCalibration:
                 % (self.name, previous, channel))
         return channel
 
-    cmd_TOOL_EDDY_CALIBRATE_help = "Calibrate tool center using CENTER_XY=x,y (CHANNEL=0..3, default 0)"
+    cmd_TOOL_EDDY_CALIBRATE_help = (
+        "Calibrate tool center using CENTER_XY=x,y "
+        "(ITERATIONS=N single-scan center updates followed by "
+        "REPEATS=N final scans averaged at the updated center; both default 1; "
+        "ITERATIONS=0 skips the update phase and measures only once)")
     def cmd_TOOL_EDDY_CALIBRATE(self, gcmd):
         # 按命令参数 CHANNEL (默认 0) 选择通道并刷新线圈/扫描参数,
         # 无需先执行 SET_TOOL_EDDY_CHANNEL
@@ -278,8 +317,12 @@ class ToolEddyCalibration:
         # 获取扫描Z偏移（相对于scan_height，+远离线圈，-靠近线圈）
         scan_height_offset = gcmd.get_float('SCAN_HEIGHT_OFFSET', 0.0)
 
-        # 获取重复次数
+        # 获取最终中心的重复测量次数
         repeats = gcmd.get_int('REPEATS', 1, minval=1, maxval=10)
+
+        # 获取中心迭代次数: 每轮只测一次, 后续轮次以上一轮结果为基点;
+        # 0 = 跳过迭代, 直接以传入的 CENTER_XY 终测一轮 (只扫一组)
+        iterations = gcmd.get_int('ITERATIONS', 1, minval=0, maxval=10)
 
         # 获取配对消除开关
         pair_cancel = gcmd.get_int('PAIR_CANCEL', 0, minval=0, maxval=1)
@@ -295,10 +338,36 @@ class ToolEddyCalibration:
 
         toolhead = self.printer.lookup_object('toolhead')
 
-        calibrator = EddyCalibrator(self, gcmd, scan_height_offset, repeats,
-                                    bool(pair_cancel), tool_name)
+        # 先迭代更新扫描中心, 每轮只测一次, 避免每轮重复测量拉长总时间
+        base_x, base_y = center_xy
+        for iteration in range(iterations):
+            if iterations > 1:
+                gcmd.respond_info(
+                    "Iteration %d/%d (base %.4f,%.4f)"
+                    % (iteration + 1, iterations, base_x, base_y))
+            calibrator = EddyCalibrator(self, gcmd, scan_height_offset,
+                                        1, bool(pair_cancel), tool_name)
+            center_x, center_y, deviation, min_r2, edge_hits, trusted = \
+                calibrator.run_calibration((base_x, base_y), dir_angles)
+            if iterations > 1:
+                gcmd.respond_info(
+                    "Iteration %d/%d result: X=%.4f Y=%.4f "
+                    "(dev=%.3f mm, fit R²=%.4f, %s)"
+                    % (iteration + 1, iterations, center_x, center_y,
+                       deviation, min_r2,
+                       'trusted' if trusted else 'UNTRUSTED'))
+            base_x, base_y = center_x, center_y
+
+        # 迭代完成后固定最终基点, 再重复测量并对结果取平均
+        calibrator = EddyCalibrator(self, gcmd, scan_height_offset,
+                                    repeats, bool(pair_cancel), tool_name)
         center_x, center_y, deviation, min_r2, edge_hits, trusted = \
-            calibrator.run_calibration(center_xy, dir_angles)
+            calibrator.run_calibration((base_x, base_y), dir_angles)
+        gcmd.respond_info(
+            "Final repeat result: X=%.4f Y=%.4f "
+            "(dev=%.3f mm, fit R²=%.4f, %s)"
+            % (center_x, center_y, deviation, min_r2,
+               'trusted' if trusted else 'UNTRUSTED'))
 
         # 保存探测结果
         previous = self.last_result.get(tool_name, {})
@@ -336,9 +405,9 @@ class ToolEddyCalibration:
             if result['fitR2'] < self.trust_min_r2:
                 reasons.append("fit R² %.4f < %.3f"
                                % (result['fitR2'], self.trust_min_r2))
-            elif result['fitR2'] >= self.trust_max_r2:
-                reasons.append("fit R² %.4f >= %.3f (too perfect, no noise?)"
-                               % (result['fitR2'], self.trust_max_r2))
+            if calibrator._pass_max_r2 >= 1.0:
+                reasons.append("fit R² %.4f >= 1.0 (must be < 1.0)"
+                               % calibrator._pass_max_r2)
             if result['edgeScans']:
                 reasons.append("%d peak(s) near scan edge"
                                % result['edgeScans'])
@@ -350,13 +419,13 @@ class ToolEddyCalibration:
     cmd_TOOL_EDDY_FIND_COIL_help = (
         "Automatically locate the coil center: a serpentine raster over a "
         "rectangular region (GRID mm line spacing at RASTER_SPEED mm/s) "
-        "finds the frequency response extremum, then orthogonal refinement "
-        "scans fit the exact center. REGION=xmin,ymin,xmax,ymax overrides "
+        "finds enclosed local extrema and verifies up to three candidates "
+        "with orthogonal refinement scans. REGION=xmin,ymin,xmax,ymax overrides "
         "optional find_coil_region configuration. [GRID=1] "
-        "[RASTER_SPEED=20] [CHANNEL=0]. "
+        "[RASTER_SPEED=20] [SCAN_HEIGHT_OFFSET=0] [CHANNEL=0]. "
         "Save the reported CENTER_XY with a G-code SAVE_VARIABLE macro. "
         "The whole region must be clear "
-        "of obstacles at scan_height above the coil plane.")
+        "of obstacles at the scan plane above the coil.")
     def cmd_TOOL_EDDY_FIND_COIL(self, gcmd):
         channel = self._select_channel(gcmd)
         self._check_coil_z(gcmd)
@@ -371,6 +440,9 @@ class ToolEddyCalibration:
         grid_mm = gcmd.get_float('GRID', 1.0, minval=0.5, maxval=10.0)
         raster_speed = gcmd.get_float('RASTER_SPEED', 20.0,
                                       minval=1.0, maxval=150.0)
+        # 扫描Z偏移 (相对 scan_height, +远离线圈, -靠近线圈),
+        # 与 TOOL_EDDY_CALIBRATE 同一形式, 光栅与正交精扫共用
+        scan_height_offset = gcmd.get_float('SCAN_HEIGHT_OFFSET', 0.0)
 
         n_lines = max(2, int(math.ceil((ymax - ymin) / grid_mm)) + 1)
         est_time = ((n_lines * (xmax - xmin)) / raster_speed
@@ -381,7 +453,8 @@ class ToolEddyCalibration:
             "channel %d..."
             % (xmin, xmax, ymin, ymax, xmax - xmin, ymax - ymin, grid_mm,
                raster_speed, n_lines, est_time, channel))
-        calibrator = EddyCalibrator(self, gcmd, tool_name='findcoil')
+        calibrator = EddyCalibrator(self, gcmd, scan_height_offset,
+                                    tool_name='findcoil')
         center_x, center_y = calibrator.find_coil_center(
             xmin, ymin, xmax, ymax, grid_mm, raster_speed)
         self.last_coil_center = {
@@ -416,7 +489,10 @@ class ToolEddyCalibration:
                 'trusted' if result['trusted'] else 'UNTRUSTED')
         gcmd.respond_info(msg)
 
-    cmd_SET_TOOL_Z_help = "Set the Z coordinate for a tool (from external source)"
+    cmd_SET_TOOL_Z_help = ("Set the Z coordinate for a tool (from external "
+                           "source); optional CENTER_XY=x,y also records the "
+                           "scan center the Z was probed at (echoed for "
+                           "troubleshooting)")
     def cmd_SET_TOOL_Z(self, gcmd):
         tool_name = gcmd.get('TOOL', None)
         if tool_name is None:
@@ -426,17 +502,24 @@ class ToolEddyCalibration:
         if z is None:
             raise gcmd.error("Z parameter is required")
 
+        # 可选 CENTER_XY: 一并记录本次 tap 所用的扫描中心, 回显时可见
+        center_xy = parse_center_xy(gcmd)
+
         # 如果工具不存在，初始化数据
         if tool_name not in self.last_result:
             self.last_result[tool_name] = {
-                'x': 0.0,
-                'y': 0.0,
+                'x': center_xy[0] if center_xy is not None else 0.0,
+                'y': center_xy[1] if center_xy is not None else 0.0,
                 'z': z,
             }
             gcmd.respond_info("Tool '%s' initialized with Z=%.4f" % (tool_name, z))
         else:
-            # 更新 Z 值
+            # 更新 Z 值; 给出 CENTER_XY 时同步覆盖 XY (仅作记录, 校准结果
+            # 由 TOOL_EDDY_CALIBRATE 覆写, 不受影响)
             self.last_result[tool_name]['z'] = z
+            if center_xy is not None:
+                self.last_result[tool_name]['x'] = center_xy[0]
+                self.last_result[tool_name]['y'] = center_xy[1]
 
         result = self.last_result[tool_name]
         gcmd.respond_info(
@@ -619,14 +702,15 @@ class EddyCalibrator:
         center_x, center_y = self._measure_center(
             center_x, center_y, dir_angles, "Scan", repeats=self.repeats)
 
-        # 可信度判定: 结果偏离初始扫描中心太多、拟合度不在 [min_r2, max_r2)
-        # 区间 (太差或好到近乎无噪声)、或峰值贴扫描线边缘 (峰值可能被截断,
-        # 拟合度再高也不可用) 均判不可信
+        # 可信度判定: 偏差超限、R² 不在 [trust_min_r2, 1.0)、或峰值贴边
+        # (可能被截断) 均判不可信
         deviation = math.hypot(center_x - initial_x, center_y - initial_y)
         min_r2 = getattr(self, '_pass_min_r2', 0.0)
+        max_r2 = getattr(self, '_pass_max_r2', 0.0)
         edge_hits = getattr(self, '_pass_edge_hits', 0)
         trusted = (deviation <= self.cal.trust_max_deviation
-                   and self.cal.trust_min_r2 <= min_r2 < self.cal.trust_max_r2
+                   and min_r2 >= self.cal.trust_min_r2
+                   and max_r2 < 1.0
                    and edge_hits == 0)
 
         return center_x, center_y, deviation, min_r2, edge_hits, trusted
@@ -703,15 +787,18 @@ class EddyCalibrator:
 
         # 本轮质量信息存实例属性, run_calibration 在主扫描轮之后读取
         self._pass_min_r2 = min(fit_r2_list) if fit_r2_list else 0.0
+        self._pass_max_r2 = max(fit_r2_list) if fit_r2_list else 0.0
         self._pass_edge_hits = edge_hit_count
 
         return avg_x, avg_y
 
     def find_coil_center(self, xmin, ymin, xmax, ymax, grid_mm, raster_speed):
         """大范围自动找线圈中心: 矩形区域内以 grid_mm 行距、raster_speed
-        行进速度蛇形光栅粗扫, 定位频率响应极值, 再经 0°/90° 正交精扫
-        (抛物线拟合, 仍用慢速 scan_speed) 得到精确中心。返回 (x, y)。
-        前提: 扫描平面 (coil_z + scan_height) 在整个区域内安全无障碍。"""
+        行进速度蛇形光栅粗扫, 依据局部峰谷及周围环带响应生成候选,
+        经 0°/90° 正交精扫复核并在失败时尝试下一候选。
+        抛物线拟合仍使用慢速 scan_speed。返回 (x, y)。
+        前提: 扫描平面 (coil_z + scan_height + SCAN_HEIGHT_OFFSET)
+        在整个区域内安全无障碍。"""
         self._ensure_homed()
 
         # 区域钳制到行程内 (宏收缩区域已钳过, 这里兜底配置/命令区域越界)
@@ -734,11 +821,21 @@ class EddyCalibrator:
         n_lines = max(2, int(math.ceil((ymax - ymin) / grid_mm)) + 1)
         spacing = (ymax - ymin) / (n_lines - 1)
 
-        scan_z = self.cal.coil_z + self.cal.scan_height
+        # 计算实际扫描 Z, 与 _scan_direction 同一形式:
+        # scan_height + SCAN_HEIGHT_OFFSET (+远离线圈, -靠近线圈),
+        # 下限钳制到线圈平面, 防止碰撞线圈
+        effective_scan_height = self.cal.scan_height + self.scan_height_offset
+        if effective_scan_height < 0:
+            self.gcmd.respond_info(
+                "  WARNING: scan_z would be below coil_z, "
+                "clamping effective offset from %.4f to 0" %
+                effective_scan_height)
+            effective_scan_height = 0.0
+        scan_z = self.cal.coil_z + effective_scan_height
         safe_z = scan_z + self.cal.scan_safe_z
 
-        # 从区域一角进入, 蛇形光栅 (行间不抬升, 整个区域同高)
-        self._move_to_position(xmin, ymin, safe_z)
+        # 从区域一角直接降到扫描平面, 蛇形光栅 (行间不抬升, 整个区域同高);
+        # XY 行进保持在进入前的高度完成, 不再经 safe_z 中转
         self._move_to_position(xmin, ymin, scan_z)
 
         samples = []
@@ -748,7 +845,7 @@ class EddyCalibrator:
             self.toolhead.manual_move([sx, y, None], self.cal.travel_speed_xy)
             self.toolhead.wait_moves()
             samples.extend(
-                self._collect_scan_data(sx, y, ex, y, speed=raster_speed))
+                self._collect_scan_data(ex, y, speed=raster_speed))
             if (i + 1) % 10 == 0 and i + 1 < n_lines:
                 self.gcmd.respond_info("  Raster progress: %d/%d lines"
                                        % (i + 1, n_lines))
@@ -762,34 +859,213 @@ class EddyCalibrator:
                 "Coarse raster collected only %d valid samples; check sensor "
                 "wiring and sample rate" % (len(samples),))
 
-        # 极性判定: 极值偏离背景中位数的幅度, 谷底形取最小样本, 峰值形取最大样本
-        freqs = sorted(f for _, _, f in samples)
-        median = freqs[len(freqs) // 2]
-        low = min(samples, key=lambda s: s[2])
-        high = max(samples, key=lambda s: s[2])
-        dip = median - low[2]
-        bump = high[2] - median
-        if max(dip, bump) < FIND_COIL_MIN_RESPONSE_HZ:
+        candidates = self._find_coarse_extrema(
+            samples, xmin, ymin, spacing, n_lines)
+        if not candidates:
             raise self.gcmd.error(
-                "No coil response found in the scanned region (max deviation "
-                "%.1f Hz); enlarge RANGE, check CHANNEL, or check scan_height"
-                % (max(dip, bump),))
-        coarse = low if dip >= bump else high
+                "No enclosed coil-like peak or valley found in the raster; "
+                "check GRID, RANGE, CHANNEL, and scan_height")
+        try_count = min(len(candidates), FIND_COIL_MAX_CANDIDATES)
         self.gcmd.respond_info(
-            "  Raster: %.1f x %.1f mm, %d lines, %d samples, %s response "
-            "%.1f Hz, coarse center (%.4f, %.4f)"
+            "  Raster: %.1f x %.1f mm, %d lines, %d samples, %d local "
+            "extrema candidate(s); trying %d"
             % (xmax - xmin, ymax - ymin, n_lines, len(samples),
-               'valley' if dip >= bump else 'peak', max(dip, bump),
-               coarse[0], coarse[1]))
+               len(candidates), try_count))
 
-        # 正交精扫: 0° 扫描定 X, 90° 扫描定 Y (复用 _scan_direction 的
-        # 抛物线拟合与日志)
-        peak_x, _, freq_x = self._scan_direction(coarse[0], coarse[1], 0)
-        _, peak_y, freq_y = self._scan_direction(coarse[0], coarse[1], 90)
-        if freq_x is None or freq_y is None:
-            raise self.gcmd.error(
-                "Refinement scan found no peak near the coarse center")
-        return peak_x, peak_y
+        rejected = []
+        for candidate_idx, candidate in enumerate(
+                candidates[:FIND_COIL_MAX_CANDIDATES], 1):
+            coarse_x, coarse_y, peak_type, prominence, _ = candidate
+            self.gcmd.respond_info(
+                "  Candidate %d/%d: %s prominence %.1f Hz at "
+                "(%.4f, %.4f)"
+                % (candidate_idx, try_count, peak_type, prominence,
+                   coarse_x, coarse_y))
+
+            peak_x, _, freq_x = self._scan_direction(
+                coarse_x, coarse_y, 0, repeat_idx=candidate_idx,
+                expected_type=peak_type)
+            fit_r2_x = self._last_fit_r2
+            if freq_x is None or not self._fit_quality_ok(fit_r2_x):
+                reason = "X refinement failed (fit R2=%s)" % (
+                    "%.4f" % fit_r2_x if fit_r2_x is not None else "n/a")
+                rejected.append(reason)
+                self.gcmd.respond_info(
+                    "  Candidate %d rejected: %s" % (candidate_idx, reason))
+                continue
+
+            _, peak_y, freq_y = self._scan_direction(
+                coarse_x, coarse_y, 90, repeat_idx=candidate_idx,
+                expected_type=peak_type)
+            fit_r2_y = self._last_fit_r2
+            if freq_y is None or not self._fit_quality_ok(fit_r2_y):
+                reason = "Y refinement failed (fit R2=%s)" % (
+                    "%.4f" % fit_r2_y if fit_r2_y is not None else "n/a")
+                rejected.append(reason)
+                self.gcmd.respond_info(
+                    "  Candidate %d rejected: %s" % (candidate_idx, reason))
+                continue
+
+            max_offset = 1.5 * spacing
+            offset_x = abs(peak_x - coarse_x)
+            offset_y = abs(peak_y - coarse_y)
+            if offset_x > max_offset or offset_y > max_offset:
+                reason = ("refined center moved %.3f/%.3f mm from candidate "
+                          "(limit %.3f mm)"
+                          % (offset_x, offset_y, max_offset))
+                rejected.append(reason)
+                self.gcmd.respond_info(
+                    "  Candidate %d rejected: %s" % (candidate_idx, reason))
+                continue
+
+            self.gcmd.respond_info(
+                "  Candidate %d verified: %s, X/Y fit R2=%.4f/%.4f, "
+                "center (%.4f, %.4f)"
+                % (candidate_idx, peak_type, fit_r2_x, fit_r2_y,
+                   peak_x, peak_y))
+            return peak_x, peak_y
+
+        raise self.gcmd.error(
+            "No raster candidate passed refinement verification after %d "
+            "attempt(s): %s" % (try_count, "; ".join(rejected)))
+
+    def _fit_quality_ok(self, fit_r2):
+        return (fit_r2 is not None
+                and self.cal.trust_min_r2 <= fit_r2 < 1.0)
+
+    def _find_coarse_extrema(self, samples, xmin, ymin, spacing, n_lines):
+        """查找周围环带响应相反的局部极值。"""
+        buckets = {}
+        for x, y, freq in samples:
+            row = int(round((y - ymin) / spacing))
+            row = max(0, min(n_lines - 1, row))
+            col = int(math.floor((x - xmin) / spacing))
+            bucket = buckets.setdefault((row, col), [[], 0.0, 0.0])
+            bucket[0].append(freq)
+            bucket[1] += x
+            bucket[2] += y
+
+        def median(values):
+            ordered = sorted(values)
+            middle = len(ordered) // 2
+            if len(ordered) % 2:
+                return ordered[middle]
+            return (ordered[middle - 1] + ordered[middle]) / 2.0
+
+        cells = {}
+        for key, (freqs, sum_x, sum_y) in buckets.items():
+            cells[key] = (median(freqs), sum_x / len(freqs),
+                          sum_y / len(freqs))
+
+        cell_size = spacing
+        coil_diameter = max(self.cal.coil_inner_diameter, 2.0 * cell_size)
+        outer_radius = min(max(2.5 * cell_size, 0.55 * coil_diameter),
+                           8.0 * cell_size)
+        inner_radius = max(1.25 * cell_size, 0.2 * coil_diameter)
+        if inner_radius >= outer_radius:
+            inner_radius = outer_radius * 0.5
+        row_radius = int(math.ceil(outer_radius / spacing))
+        col_radius = int(math.ceil(outer_radius / cell_size))
+        candidates = []
+
+        for (row, col), (center_freq, center_x, center_y) in cells.items():
+            neighbor_keys = [
+                (row + row_offset, col + col_offset)
+                for row_offset in (-1, 0, 1)
+                for col_offset in (-1, 0, 1)
+                if row_offset or col_offset]
+            if any(key not in cells for key in neighbor_keys):
+                continue
+            neighbor_freqs = [cells[key][0] for key in neighbor_keys]
+            kinds = []
+            if all(center_freq <= value for value in neighbor_freqs):
+                kinds.append('valley')
+            if all(center_freq >= value for value in neighbor_freqs):
+                kinds.append('peak')
+            if not kinds:
+                continue
+
+            left = cells[(row, col - 1)][0]
+            right = cells[(row, col + 1)][0]
+            down = cells[(row - 1, col)][0]
+            up = cells[(row + 1, col)][0]
+            dxx = left + right - 2.0 * center_freq
+            dyy = down + up - 2.0 * center_freq
+            dxy = (cells[(row - 1, col + 1)][0]
+                   - cells[(row - 1, col - 1)][0]
+                   - cells[(row + 1, col + 1)][0]
+                   + cells[(row + 1, col - 1)][0]) / 4.0
+            midpoint = (dxx + dyy) / 2.0
+            spread = math.sqrt(((dxx - dyy) / 2.0) ** 2 + dxy * dxy)
+            curvature_min = midpoint - spread
+            curvature_max = midpoint + spread
+            curvature_scale = max(abs(curvature_min), abs(curvature_max))
+            if curvature_scale <= 0.0:
+                continue
+            shape_ratio = (min(abs(curvature_min), abs(curvature_max))
+                           / curvature_scale)
+
+            for peak_type in kinds:
+                if peak_type == 'valley':
+                    if curvature_min <= 0.0:
+                        continue
+                elif curvature_max >= 0.0:
+                    continue
+                if shape_ratio < 0.1:
+                    continue
+
+                sectors = [[] for _ in range(8)]
+                for ring_row in range(max(0, row - row_radius),
+                                      min(n_lines, row + row_radius + 1)):
+                    for ring_col in range(col - col_radius,
+                                          col + col_radius + 1):
+                        if (ring_row, ring_col) == (row, col):
+                            continue
+                        cell = cells.get((ring_row, ring_col))
+                        if cell is None:
+                            continue
+                        freq, x, y = cell
+                        dx, dy = x - center_x, y - center_y
+                        radius = math.hypot(dx, dy)
+                        if not inner_radius <= radius <= outer_radius:
+                            continue
+                        sector = int(
+                            (math.atan2(dy, dx) + math.pi)
+                            * 8.0 / (2.0 * math.pi)) % 8
+                        sectors[sector].append(freq)
+
+                sector_freqs = [
+                    (max(values) if peak_type == 'valley' else min(values))
+                    for values in sectors if values]
+                if len(sector_freqs) < 6:
+                    continue
+                if peak_type == 'valley':
+                    contrasts = [value - center_freq
+                                 for value in sector_freqs]
+                else:
+                    contrasts = [center_freq - value
+                                 for value in sector_freqs]
+                prominence = median(contrasts)
+                if (prominence < FIND_COIL_MIN_RESPONSE_HZ
+                        or sum(value > 0.0 for value in contrasts) < 6):
+                    continue
+                candidates.append(
+                    (center_x, center_y, peak_type, prominence,
+                     prominence * shape_ratio))
+
+        candidates.sort(key=lambda candidate: candidate[4], reverse=True)
+        separated = []
+        min_separation = 1.5 * cell_size
+        for candidate in candidates:
+            x, y, peak_type, _, _ = candidate
+            if any(
+                    peak_type == previous[2]
+                    and math.hypot(x - previous[0], y - previous[1])
+                    < min_separation
+                    for previous in separated):
+                continue
+            separated.append(candidate)
+        return separated
 
     def _compute_center_lsq(self, peak_points):
         """使用LSQ从各方向峰值投影重建中心坐标
@@ -930,7 +1206,8 @@ class EddyCalibrator:
         return (start_x + t * cos_a, start_y + t * sin_a,
                 end_x + t * cos_a, end_y + t * sin_a)
 
-    def _scan_direction(self, center_x, center_y, angle_deg, repeat_idx=None):
+    def _scan_direction(self, center_x, center_y, angle_deg, repeat_idx=None,
+                        expected_type=None):
         """沿指定角度方向扫描，经过中心点
         angle_deg: 扫描方向角度（度），0=X+, 90=Y+
         起点为中心点偏移 -L/2 方向，终点为 +L/2 方向
@@ -973,13 +1250,13 @@ class EddyCalibrator:
         self._move_to_position(start_x, start_y, scan_z)
 
         # 采集数据
-        samples = self._collect_scan_data(start_x, start_y, end_x, end_y)
+        samples = self._collect_scan_data(end_x, end_y)
 
         # 抬高 Z
         self._move_to_position(end_x, end_y, safe_z)
 
         # 找峰值并保存数据
-        return self._find_peak(samples, scan_name)
+        return self._find_peak(samples, scan_name, expected_type)
 
     def _move_to_position(self, x, y, z):
         """移动工具头到指定位置，XY和Z使用不同速度"""
@@ -989,7 +1266,32 @@ class EddyCalibrator:
         self.toolhead.manual_move([None, None, z], self.cal.travel_speed_z)
         self.toolhead.wait_moves()
 
-    def _collect_scan_data(self, start_x, start_y, end_x, end_y, speed=None):
+    @staticmethod
+    def _move_distance_at_time(move: _KlipperScanMove,
+                               elapsed_time: float) -> Optional[float]:
+        accel_t = move.accel_t
+        cruise_t = move.cruise_t
+        decel_t = move.decel_t
+        total_time = accel_t + cruise_t + decel_t
+        if elapsed_time < 0.0 or elapsed_time > total_time:
+            return None
+
+        accel_distance = 0.5 * (move.start_v + move.cruise_v) * accel_t
+        cruise_distance = move.cruise_v * cruise_t
+        if elapsed_time < accel_t:
+            distance = (move.start_v * elapsed_time
+                        + 0.5 * move.accel * elapsed_time * elapsed_time)
+        elif elapsed_time < accel_t + cruise_t:
+            distance = (accel_distance
+                        + move.cruise_v * (elapsed_time - accel_t))
+        else:
+            decel_elapsed = elapsed_time - accel_t - cruise_t
+            distance = (accel_distance + cruise_distance
+                        + move.cruise_v * decel_elapsed
+                        - 0.5 * move.accel * decel_elapsed * decel_elapsed)
+        return max(0.0, min(move.move_d, distance))
+
+    def _collect_scan_data(self, end_x, end_y, speed=None):
         """
         在直线扫描过程中采集频率数据
         返回：[(x, y, freq), ...]
@@ -998,8 +1300,15 @@ class EddyCalibrator:
         # 计算扫描参数
         if speed is None:
             speed = self.cal.scan_speed
-        distance = math.sqrt((end_x - start_x)**2 + (end_y - start_y)**2)
-        scan_time = distance / speed
+        lookahead = getattr(self.toolhead, 'lookahead', None)
+        get_last_move = getattr(lookahead, 'get_last', None)
+        register_lookahead_callback = getattr(
+            self.toolhead, 'register_lookahead_callback', None)
+        if (not callable(get_last_move)
+                or not callable(register_lookahead_callback)):
+            raise self.gcmd.error(
+                "Klipper toolhead does not expose motion timing needed for "
+                "eddy scan position mapping")
 
         # 开始传感器数据采集
         reactor = self.printer.get_reactor()
@@ -1020,16 +1329,32 @@ class EddyCalibrator:
         # 等待一下，让传感器数据稳定且回调生效
         reactor.pause(reactor.monotonic() + 0.05)
 
+        scan_move_end_times: List[float] = []
         try:
             # 添加短暂延迟，确保运动队列准备好
             self.toolhead.dwell(0.010)
 
-            # 获取当前最后运动时间作为基准（打印时间）
-            move_start_print_time = self.toolhead.get_last_move_time()
-
             # 启动扫描移动
             self.toolhead.manual_move([end_x, end_y, None], speed)
+            queued_move = get_last_move()
+            if queued_move is None:
+                self.toolhead.wait_moves()
+                raise self.gcmd.error(
+                    "Unable to capture Klipper scan motion profile")
+            scan_move = cast(_KlipperScanMove, queued_move)
+            # The callback receives the finalized scan move's planned end time.
+            register_lookahead_callback(scan_move_end_times.append)
             self.toolhead.wait_moves()
+            if len(scan_move_end_times) != 1:
+                raise self.gcmd.error(
+                    "Unable to determine Klipper scan motion timing")
+
+            scan_move_duration = (scan_move.accel_t + scan_move.cruise_t
+                                  + scan_move.decel_t)
+            if scan_move_duration <= 0.0 or scan_move.move_d <= 0.0:
+                raise self.gcmd.error(
+                    "Klipper returned an invalid scan motion profile")
+            move_start_print_time = scan_move_end_times[0] - scan_move_duration
 
             # 稍等，确保最后的数据到达
             reactor.pause(reactor.monotonic() + 0.2)
@@ -1055,20 +1380,19 @@ class EddyCalibrator:
 
                 relative_time = samp_time - move_start_print_time
 
-                if relative_time < -0.05 or relative_time > scan_time + 0.05:
+                move_distance = self._move_distance_at_time(
+                    scan_move, relative_time)
+                if move_distance is None:
                     if relative_time < 0:
                         skipped_before += 1
                     else:
                         skipped_after += 1
                     continue
 
-                if relative_time < 0:
-                    skipped_before += 1
-                    continue
-
-                t = relative_time / scan_time
-                x = start_x + t * (end_x - start_x)
-                y = start_y + t * (end_y - start_y)
+                x = (scan_move.start_pos[0]
+                     + move_distance * scan_move.axes_r[0])
+                y = (scan_move.start_pos[1]
+                     + move_distance * scan_move.axes_r[1])
 
                 samples.append((x, y, freq))
 
@@ -1101,7 +1425,7 @@ class EddyCalibrator:
         detected = 'peak' if center_avg > edge_avg else 'valley'
         return detected, center_avg, edge_avg
 
-    def _find_peak(self, samples, scan_name=None):
+    def _find_peak(self, samples, scan_name=None, expected_type=None):
         """
         检测工具产生的频率极值点（峰值或谷值）
         peak模式：中心处频率最高（大线圈）
@@ -1109,6 +1433,8 @@ class EddyCalibrator:
         auto模式：自动检测信号形态
         返回：(peak_x, peak_y, peak_freq)
         """
+        self._last_fit_info = None
+        self._last_fit_r2 = None
         if len(samples) < 10:
             self.gcmd.respond_info("  ERROR: Not enough samples (%d)" % len(samples))
             return None, None, None
@@ -1122,6 +1448,11 @@ class EddyCalibrator:
         # 自动检测peak_type（每次扫描都重新检测）
         detected_type, center_avg, edge_avg = self._auto_detect_peak_type(freq_data)
         auto_detect_info = (detected_type, center_avg, edge_avg)
+        if expected_type is not None:
+            if expected_type not in ('peak', 'valley'):
+                raise self.gcmd.error(
+                    "Invalid expected peak type: %s" % expected_type)
+            detected_type = expected_type
 
         # 排除边缘区域（前15%和后15%）
         margin = (len(freq_data) * 15) // 100

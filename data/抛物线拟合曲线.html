@@ -5,7 +5,7 @@
 		<meta charset="UTF-8">
 		<meta name="viewport" content="width=device-width, initial-scale=1.0">
 		<title>抛物线拟合曲线工具</title>
-		<script src="https://cdn.bootcdn.net/ajax/libs/echarts/6.1.0/echarts.min.js"></script>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/6.1.0/echarts.min.js"></script>
 		<style>
 			:root {
 				color-scheme: light;
@@ -143,6 +143,10 @@
 				margin-top: 4px;
 				font-size: 11px;
 				color: var(--muted);
+				max-width: 100%;
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
 			}
 
 			.file-info.loaded {
@@ -158,29 +162,6 @@
 				background: rgba(255, 255, 255, 0.72);
 				outline: none;
 				transition: border-color 0.2s ease, box-shadow 0.2s ease;
-			}
-
-			.klipper-loader {
-				padding: 12px;
-				border: 1px solid var(--line);
-				border-radius: 18px;
-				background: rgba(255, 255, 255, 0.5);
-			}
-
-			.klipper-loader input {
-				min-width: 0;
-				flex: 1;
-				padding: 8px 10px;
-				border: 1px solid var(--line);
-				border-radius: 10px;
-				color: var(--text);
-				background: rgba(255, 255, 255, 0.72);
-				outline: none;
-			}
-
-			.klipper-loader button {
-				padding: 8px 12px;
-				white-space: nowrap;
 			}
 
 			.input-row .pointInput-wrap:hover {
@@ -418,18 +399,6 @@
 					</div>
 				</div>
 
-				<div class="klipper-loader">
-					<div class="label"><span>从 Klipper 读取扫描文件</span></div>
-					<div class="input-row">
-						<input id="klipperUrlInput" type="url" placeholder="http://主机地址:7125">
-						<input id="klipperFileInput" type="text"
-							value="tool_eddy_calibration/tool_eddy_scan_Scan_0.csv"
-							placeholder="tool_eddy_calibration/扫描文件.csv">
-						<button id="loadKlipperFileButton" class="secondary">读取</button>
-					</div>
-					<div class="file-info">通过 Moonraker config 文件接口读取；Klipper 地址与网页不同源时需允许 CORS。</div>
-				</div>
-
 				<div class="label">
 					<span>峰值类型</span>
 				</div>
@@ -528,9 +497,6 @@
 			const peakInfoDiv = document.getElementById("peakInfo");
 			const peakTypeSelect = document.getElementById("peakTypeSelect");
 			const detectedTypeBadge = document.getElementById("detectedTypeBadge");
-			const klipperUrlInput = document.getElementById("klipperUrlInput");
-			const klipperFileInput = document.getElementById("klipperFileInput");
-			const loadKlipperFileButton = document.getElementById("loadKlipperFileButton");
 			const chart = echarts.init(document.getElementById("chart"));
 
 			/* ========== CSV 解析 ========== */
@@ -671,35 +637,6 @@
 				}
 			}
 
-			async function loadKlipperCSV() {
-				const baseUrl = klipperUrlInput.value.trim().replace(/\/+$/, "");
-				const filePath = klipperFileInput.value.trim().replace(/^\/+/, "");
-				if (!baseUrl || !filePath) {
-					setMessage("请填写 Klipper/Moonraker 地址和扫描文件路径", true);
-					return;
-				}
-				if (filePath.split("/").some(part => part === "..")) {
-					setMessage("扫描文件路径不能包含 ..", true);
-					return;
-				}
-
-				const encodedPath = filePath.split("/").map(encodeURIComponent).join("/");
-				const url = `${baseUrl}/server/files/config/${encodedPath}`;
-				loadKlipperFileButton.disabled = true;
-				setMessage("正在从 Klipper 读取扫描文件...");
-				try {
-					const response = await fetch(url);
-					if (!response.ok) {
-						throw new Error(`读取失败（HTTP ${response.status}）：${url}`);
-					}
-					loadCSVText(await response.text(), filePath);
-				} catch (err) {
-					setMessage(`${err.message}。请确认 Moonraker 地址、文件路径和 CORS 配置。`, true);
-				} finally {
-					loadKlipperFileButton.disabled = false;
-				}
-			}
-
 			function showScanInfo() {
 				if (!csvParams) { scanInfoDiv.style.display = "none"; return; }
 				const items = [];
@@ -758,8 +695,6 @@
 					handleCSVFile(e.dataTransfer.files[0]);
 				}
 			});
-			loadKlipperFileButton.addEventListener("click", loadKlipperCSV);
-
 			/* ========== 数据解析工具 ========== */
 
 			function sortPoints(points) {

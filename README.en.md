@@ -15,14 +15,15 @@ least squares), yielding XY offsets between tools.
   driver, runtime-switchable channels 0-3); each channel has its own coil
   position and scan settings
 - `TOOL_EDDY_FIND_COIL` automatic serpentine raster search for the coil center —
-  no manual coordinate measuring; results persist via G-code `SAVE_VARIABLE`,
-  and re-runs automatically shrink the search region
+  no manual coordinate measuring; the macro suite persists the result as the
+  shared `coil_x/y_{channel}`, found once and common to all tools
 - Signal shape auto-detection (peak / valley); peak search is anchored to the
   middle band of each scan, suppressing stray side responses
 - Gaussian-weighted parabolic fitting for sub-sample peak localization
+- Sensor timestamps are mapped to XY using Klipper's planned acceleration/cruise/deceleration profile; samples outside the move are no longer extrapolated along the scan line
 - Optional paired forward/reverse scans to cancel motion hysteresis
 - Results carry a trust verdict (`trusted` / `fitR2` / `deviation` /
-  `edgeScans`): fit R² must fall within `[trust_min_r2, trust_max_r2)`, the
+  `edgeScans`): fit R² must satisfy `trust_min_r2 <= R² < 1.0`, the
   result must not deviate from the initial scan center, and the peak must not
   sit at the edge of a scan line — any violation marks the result untrusted
 - Scan lines and search regions are automatically clamped to the kinematic
@@ -34,7 +35,7 @@ least squares), yielding XY offsets between tools.
 Hardware reference: [oshwhub "Little Crab" dual-coil board](https://oshwhub.com/cxg01/project_lbabffjk)
 (schematics / Gerber in the [hardware/](hardware/) directory)
 
-Version: **V2.0.0** (query with the `TOOL_EDDY_VERSION` command)
+Version: **V2.2.0** (query with the `TOOL_EDDY_VERSION` command)
 
 ## Repository layout
 
@@ -65,15 +66,16 @@ tool_eddy_calibration/
 ```bash
 cd ~
 git clone https://github.com/chengxg/tool_eddy_calibration.git
+# Users in China: git clone https://gitee.com/chengxiaogang/tool_eddy_calibration.git
 cd tool_eddy_calibration
-./klipper/install.sh
+bash ./klipper/install.sh
 ```
 
 Installs to `~/klipper` by default; pass the directory if klipper lives
 elsewhere:
 
 ```bash
-./klipper/install.sh /path/to/klipper
+bash ./klipper/install.sh /path/to/klipper
 ```
 
 The script links host-side modules into `klippy/extras/` (falls back to
@@ -91,11 +93,12 @@ Install manually first (option 1), then append the contents of
 ```ini
 [update_manager tool_eddy_calibration]
 type: git_repo
+# origin: https://gitee.com/chengxiaogang/tool_eddy_calibration.git  # for users in China
 origin: https://github.com/chengxg/tool_eddy_calibration.git
 path: ~/tool_eddy_calibration
 install_script: klipper/install.sh
 managed_services: klipper
-primary_branch: main
+primary_branch: master
 ```
 
 The plugin then shows up on the Mainsail / Fluidd update page — check for
@@ -103,7 +106,7 @@ updates and upgrade with one click; Moonraker runs the install script and
 restarts klipper afterwards.
 
 > Note: `primary_branch` must match the repo's default branch name
-> (`main` or `master`).
+> (`master` for this repo).
 
 ## Firmware requirements (multi-channel)
 
@@ -122,7 +125,7 @@ variant with `_2`-suffixed symbols, coexisting with the stock
 `src/Makefile` with the build entry. If the stock modules above are missing
 (too old), the installer aborts — this plugin does not support old firmware;
 upgrade Klipper / Kalico first. To install host-side only, run
-`./klipper/install.sh --host-only`.
+`bash ./klipper/install.sh --host-only`.
 
 After installing, **rebuild and flash the firmware**:
 
@@ -135,7 +138,7 @@ make flash         # or however you flash your board
 
 After flashing and restarting, run `TEST_LDC1612` to verify the sensor and
 `TOOL_EDDY_VERSION` to confirm the plugin version and driver (should show
-`version: 2.0.0`, `driver: ldc1612_2`).
+`version: 2.2.0`, `driver: ldc1612_2`).
 
 > Note: after a Moonraker update, if the firmware sources changed you must
 > rebuild and re-flash manually (Moonraker restarts klipper but never flashes
@@ -193,9 +196,8 @@ find_coil_region: 90,90,110,110
 
 # Result trust criteria (any violation => trusted=False)
 #trust_max_deviation: 1.0 # max allowed deviation from the initial scan center (mm)
-#trust_min_r2: 0.996      # per-direction parabola fit R² must be >= this
-#trust_max_r2: 1.0        # fit R² must be < this (suspiciously noiseless = bad data)
-#trust_edge_margin: 1.0   # peak closer than this to a scan line end (mm) = edge hit
+#trust_min_r2: 0.994      # per-direction parabola fit R² must be >= this and < 1.0
+#trust_edge_margin: 1.0 # peak closer than this to a scan line end (mm) = edge hit
 
 # Debug
 #save_data: False         # save raw scan data next to the config, in tool_eddy_calibration/
@@ -215,8 +217,7 @@ find_coil_region: 90,90,110,110
 | `travel_speed_z` | 10 | 1~50 | Z travel speed (mm/s) |
 | `scan_safe_z` | 2.0 | 0.5~10 | Safe Z lift height (mm) |
 | `trust_max_deviation` | 1.0 | 0.05~10 | Max deviation from the initial scan center (mm) before untrusted |
-| `trust_min_r2` | 0.996 | 0~1 | Minimum per-direction fit R²; below = untrusted |
-| `trust_max_r2` | 1.0 | 0~1 | Upper bound (exclusive) on fit R²; reaching it flags bad data (no noise at all) |
+| `trust_min_r2` | 0.994 | 0~1 (exclusive upper bound) | Per-direction fit must satisfy `trust_min_r2 <= R² < 1.0` |
 | `trust_edge_margin` | 1.0 | 0.1~10 | Peak closer than this to a scan line end (mm) counts as an edge hit (truncated peak — untrusted regardless of fit quality) |
 | `save_data` | False | - | Save raw scan data to `tool_eddy_calibration/` next to the config |
 
@@ -225,21 +226,19 @@ find_coil_region: 90,90,110,110
 The full macro suite lives in [config/calibration-eddy.cfg](config/calibration-eddy.cfg);
 include it and follow the steps below.
 
-### 1. Find coil centers (first run)
+### 1. Find the coil center (first run)
 
 ```
-FIND_ALL_TOOL_EDDY_COIL_CENTERS
+FIND_TOOL_EDDY_COIL_CENTER TOOL=0 [CHANNEL=0]   # run once with any single tool
 ```
 
-Per tool: dock the tool → serpentine raster search within the configured
-`find_coil_region` → orthogonal refinement scans → persist via `SAVE_VARIABLE`
-as `t{tool}_coil_x_{channel}` / `t{tool}_coil_y_{channel}`. Re-runs
-automatically shrink the region around the saved center (±`refine_radius`,
-default 3mm), cutting scan rows quadratically; `FORCE=1` forces the full
-region.
-
-Re-find a single tool: `FIND_TOOL_EDDY_COIL_CENTER TOOL=1`
-(optional `CHANNEL=` / `RADIUS=` / `FORCE=1`)
+With the chosen tool (default T0): mount it → heat to 150°C and tap-probe its
+Z; the difference from T0 is passed to `TOOL_EDDY_FIND_COIL` as
+`SCAN_HEIGHT_OFFSET` (tools with longer nozzles scan proportionally higher,
+avoiding coil collisions) → serpentine raster + orthogonal refinement scans
+locate the center → persist via `SAVE_VARIABLE` as the shared
+`coil_x_{channel}` / `coil_y_{channel}` (the physical coil position, common
+to all tools). The search region is the configured `find_coil_region`.
 
 ### 2. Calibrate tool offsets
 
@@ -249,9 +248,16 @@ CALIBRATE_TOOL_EDDY TOOL=0    # single tool
 ```
 
 Per tool, automatically: tap-probe Z → `SET_TOOL_Z` → multi-directional scans
-around the saved coil center → results and offsets stored in save_variables
+around the saved center base point (that tool's converged value, falling back
+to the shared coil center) → results and offsets stored in save_variables
 (`t{n}_offset_x/y/z`). Results carry a trust verdict; `trusted: False` reports
-the reason (excess deviation / fit R² out of range / edge peak).
+the reason (excess deviation / fit R² below the threshold or >= 1.0 / edge peak).
+
+The converged center is also written back to `t{n}_x/y_{channel}` (that tool's
+base point), so the next calibration (even after a restart) uses it directly
+as the scan base point; tools never calibrated fall back to the shared
+`coil_x/y_{channel}`. Untrusted results are not written back, keeping the
+previous base-point data intact.
 
 ### 3. Query results
 
@@ -263,8 +269,8 @@ GET_TOOL_CENTER TOOL=0
 
 | Command | Parameters | Description |
 |---|---|---|
-| `TOOL_EDDY_CALIBRATE` | `TOOL=` (required), `CENTER_XY=x,y` (required), `CHANNEL=0..3`, `SCAN_HEIGHT_OFFSET=`, `REPEATS=1..10`, `PAIR_CANCEL=0/1`, `DIR=45,135` | Calibrate the tool's center coordinates against the given `CENTER_XY` |
-| `TOOL_EDDY_FIND_COIL` | `[REGION=xmin,ymin,xmax,ymax]`, `[GRID=1]`, `[RASTER_SPEED=20]`, `[CHANNEL=0]` | Wide-area automatic coil center search: command region wins over `find_coil_region`; outputs `CENTER_XY` for G-code to persist |
+| `TOOL_EDDY_CALIBRATE` | `TOOL=` (required), `CENTER_XY=x,y` (required), `CHANNEL=0..3`, `SCAN_HEIGHT_OFFSET=`, `REPEATS=1..10`, `ITERATIONS=1..10`, `PAIR_CANCEL=0/1`, `DIR=45,135` | First run `ITERATIONS` center-update passes, each using the previous result as its base and scanning once; then hold the final base fixed for `REPEATS` measurements and average them. Approximate scan count: number of directions × (`ITERATIONS` + `REPEATS`) |
+| `TOOL_EDDY_FIND_COIL` | `[REGION=xmin,ymin,xmax,ymax]`, `[GRID=1]`, `[RASTER_SPEED=20]`, `[SCAN_HEIGHT_OFFSET=0]`, `[CHANNEL=0]` | Wide-area automatic coil center search: command region wins over `find_coil_region`; outputs `CENTER_XY` for G-code to persist; `SCAN_HEIGHT_OFFSET` follows the same form as `TOOL_EDDY_CALIBRATE` and applies to both the raster and the orthogonal refinement scans |
 | `GET_TOOL_CENTER` | `TOOL=` | Query the last calibration result of a tool |
 | `SET_TOOL_Z` | `TOOL=`, `Z=` | Write the tool's Z from an external source (e.g. tap probing) |
 | `CLEAR_TOOL_CENTER` | `[TOOL=]` | Clear one tool's calibration data, or all |
@@ -296,14 +302,14 @@ git pull
 ```
 
 With symlink installs, `git pull` takes effect immediately (copy installs need
-`./klipper/install.sh` again); restart klipper and confirm the version with
+`bash ./klipper/install.sh` again); restart klipper and confirm the version with
 `TOOL_EDDY_VERSION`.
 
 ## Uninstall
 
 ```bash
 cd ~/tool_eddy_calibration
-./klipper/uninstall.sh
+bash ./klipper/uninstall.sh
 ```
 
 Also remove the `[tool_eddy_calibration ...]` section from `printer.cfg` and

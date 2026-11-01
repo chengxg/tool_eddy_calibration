@@ -12,13 +12,14 @@ Klipper 多热头（工具切换）XY 喷嘴偏移校准插件。基于床装 LD
 - 多通道线圈支持（LDC1612 / LDC1614，随仓库附带 `ldc1612_2.py` 驱动，
   可运行时切换通道 0-3），每个通道独立配置线圈位置与扫描参数
 - `TOOL_EDDY_FIND_COIL` 大范围蛇形光栅自动找线圈中心，无需手动量坐标；
-  结果经 G-code `SAVE_VARIABLE` 持久化，重找时自动收缩搜索区域
+  结果经宏套件保存为共用的 `coil_x/y_{channel}`，一次寻找全部工具共用
 - 自动检测信号形态（峰值形 / 谷底形）；峰值搜索以扫描中段为基准，
   抑制两侧杂散响应
 - 高斯加权抛物线拟合实现亚采样精度的峰值定位
+- 采样时刻按 Klipper 实际规划的加速/巡航/减速轨迹映射到 XY 位置；运动区间外的样本不再外推到扫描线上
 - 可选正反方向配对扫描，消除运动滞后误差
 - 校准结果附带可信度判定（`trusted` / `fitR2` / `deviation` / `edgeScans`）：
-  拟合 R² 须落在 `[trust_min_r2, trust_max_r2)` 区间、结果不偏离初始扫描
+  拟合 R² 须满足 `trust_min_r2 <= R² < 1.0`、结果不偏离初始扫描
   中心、峰值不贴扫描线边缘，任一不满足即标记不可信
 - 扫描线与搜索区域自动钳制到运动学行程范围（整线平移不截断），
   粗中心贴区域边缘时不会越程报错
@@ -28,7 +29,7 @@ Klipper 多热头（工具切换）XY 喷嘴偏移校准插件。基于床装 LD
 硬件参考：[嘉立创开源硬件 "小螃蟹" 双线圈板](https://oshwhub.com/cxg01/project_lbabffjk)
 （原理图 / Gerber 见 [hardware/](hardware/) 目录）
 
-版本：**V2.0.0**（`TOOL_EDDY_VERSION` 命令可查询）
+版本：**V2.2.0**（`TOOL_EDDY_VERSION` 命令可查询）
 
 ## 仓库结构
 
@@ -59,14 +60,15 @@ tool_eddy_calibration/
 ```bash
 cd ~
 git clone https://github.com/chengxg/tool_eddy_calibration.git
+# 国内用户: git clone https://gitee.com/chengxiaogang/tool_eddy_calibration.git
 cd tool_eddy_calibration
-./klipper/install.sh
+bash ./klipper/install.sh
 ```
 
 默认安装到 `~/klipper`，klipper 不在默认位置时指定目录：
 
 ```bash
-./klipper/install.sh /path/to/klipper
+bash ./klipper/install.sh /path/to/klipper
 ```
 
 安装脚本把主机端模块以**符号链接**方式放入 `klippy/extras/`（不支持符号链接时
@@ -82,17 +84,18 @@ cd tool_eddy_calibration
 ```ini
 [update_manager tool_eddy_calibration]
 type: git_repo
+# origin: https://gitee.com/chengxiaogang/tool_eddy_calibration.git  # 国内用这个
 origin: https://github.com/chengxg/tool_eddy_calibration.git
 path: ~/tool_eddy_calibration
 install_script: klipper/install.sh
 managed_services: klipper
-primary_branch: main
+primary_branch: master
 ```
 
 之后在 Mainsail / Fluidd 的更新页面即可看到本插件，**检查更新、一键升级**，
 更新后 Moonraker 自动运行安装脚本并重启 klipper。
 
-> 注意：`primary_branch` 需与仓库默认分支名一致（`main` 或 `master`）。
+> 注意：`primary_branch` 需与仓库默认分支名一致（本仓库为 `master`）。
 
 ## 固件支持（多通道必需）
 
@@ -108,7 +111,7 @@ primary_branch: main
 `install.sh` 会自动把 `sensor_ldc1612_2.c` 放入 `src/`，并幂等修补
 `src/Makefile` 添加编译条目。目标固件缺少上述自带模块（版本过旧）时，
 安装脚本会直接报错退出——本插件不支持旧版固件，请先升级 Klipper / Kalico
-再安装。只想装主机端不碰固件时用 `./klipper/install.sh --host-only`。
+再安装。只想装主机端不碰固件时用 `bash ./klipper/install.sh --host-only`。
 
 安装后需要**重新编译并烧录固件**：
 
@@ -120,7 +123,7 @@ make flash         # 按你的主板烧录方式
 ```
 
 烧录并重启后，用 `TEST_LDC1612` 验证传感器读数，`TOOL_EDDY_VERSION` 确认
-插件版本与驱动（应显示 `version: 2.0.0`、`driver: ldc1612_2`）。
+插件版本与驱动（应显示 `version: 2.2.0`、`driver: ldc1612_2`）。
 
 > 注意：Moonraker 更新本插件后，若固件源码有变化，需手动重新编译烧录固件
 > （Moonraker 只会重启 klipper，不会重刷固件）。
@@ -173,9 +176,8 @@ find_coil_region: 90,90,110,110
 
 # 校准结果可信度判定 (任一条件不满足则 trusted=False)
 #trust_max_deviation: 1.0 # 结果偏离初始扫描中心的最大允许偏差 (mm)
-#trust_min_r2: 0.996      # 各方向抛物线拟合 R² 须 >= 此值
-#trust_max_r2: 1.0        # 拟合 R² 须 < 此值 (好到近乎无噪声视为异常)
-#trust_edge_margin: 1.0   # 峰值距扫描线端点小于此值 (mm) 视为贴边缘, 不可信
+#trust_min_r2: 0.994      # 各方向抛物线拟合 R² 须 >= 此值且 < 1.0
+#trust_edge_margin: 1.0 # 峰值距扫描线端点小于此值 (mm) 视为贴边缘, 不可信
 
 # 调试
 #save_data: False         # 保存扫描原始数据到配置同级 tool_eddy_calibration/ 目录
@@ -195,8 +197,7 @@ find_coil_region: 90,90,110,110
 | `travel_speed_z` | 10 | 1~50 | Z 移动速度 (mm/s) |
 | `scan_safe_z` | 2.0 | 0.5~10 | 安全抬升高度 (mm) |
 | `trust_max_deviation` | 1.0 | 0.05~10 | 结果偏离初始扫描中心的最大允许偏差 (mm)，超出判不可信 |
-| `trust_min_r2` | 0.996 | 0~1 | 各方向抛物线拟合 R² 的最低要求，低于判不可信 |
-| `trust_max_r2` | 1.0 | 0~1 | 拟合 R² 的上界（不含），达到此值视为异常（近乎无噪声，通常是数据异常） |
+| `trust_min_r2` | 0.994 | 0~1（不含 1） | 各方向抛物线拟合 R² 须满足 `trust_min_r2 <= R² < 1.0` |
 | `trust_edge_margin` | 1.0 | 0.1~10 | 峰值距扫描线端点小于此值 (mm) 视为贴边缘（峰值可能被截断，拟合度再高也不可用） |
 | `save_data` | False | - | 保存扫描原始数据到配置同级的 `tool_eddy_calibration/` 目录 |
 
@@ -208,15 +209,14 @@ include 后按下面顺序使用：
 ### 1. 首次找线圈中心
 
 ```
-FIND_ALL_TOOL_EDDY_COIL_CENTERS
+FIND_TOOL_EDDY_COIL_CENTER TOOL=0 [CHANNEL=0]   # 任意一个工具执行一次即可
 ```
 
-对每个工具：装上工具头 → 在配置的 `find_coil_region` 区域内蛇形光栅搜索 →
-正交精扫定位中心 → `SAVE_VARIABLE` 保存为 `t{tool}_coil_x_{channel}` /
-`t{tool}_coil_y_{channel}`。重跑时自动以已保存中心收缩搜索区域
-（±`refine_radius`，默认 3mm），扫描行数按平方减少；`FORCE=1` 强制全区域。
-
-单工具重找：`FIND_TOOL_EDDY_COIL_CENTER TOOL=1`（可选 `CHANNEL=` / `RADIUS=` / `FORCE=1`）
+用指定的工具（默认 T0）：装上工具头 → 加热到 150°C 后 tap 探测 Z，相对 T0
+的差值作为 `SCAN_HEIGHT_OFFSET` 传给 `TOOL_EDDY_FIND_COIL`（喷嘴较长的工具
+扫描时相应抬高，防止碰线圈）→ 光栅 + 正交精扫定位中心 → `SAVE_VARIABLE`
+保存为共用的 `coil_x_{channel}` / `coil_y_{channel}`（物理线圈位置，全部
+工具共用）。搜索区域使用配置的 `find_coil_region`。
 
 ### 2. 校准工具偏移
 
@@ -225,10 +225,15 @@ CALIBRATE_ALL_TOOLS_EDDY      # 批量 (分组预热, 每组最多3个热端)
 CALIBRATE_TOOL_EDDY TOOL=0    # 单个
 ```
 
-每个工具自动执行：tap 探测 Z → `SET_TOOL_Z` → 以保存的线圈中心为基准
-多方向扫描 → 结果与偏移存入 save_variables（`t{n}_offset_x/y/z`）。
+每个工具自动执行：tap 探测 Z → `SET_TOOL_Z` → 以保存的中心基点（本工具
+收敛值，没有则回落共用线圈中心）多方向扫描 → 结果与偏移存入
+save_variables（`t{n}_offset_x/y/z`）。
 校准结果带可信度，`trusted` 为 False 时会给出具体原因
 （偏离过大 / 拟合度不达标 / 峰值贴边缘）。
+
+收敛后的中心还会回写为 `t{n}_x/y_{channel}`（本工具基点），下次校准
+（含重启后）直接以它为扫描基点；未校准过的工具回落共用的
+`coil_x/y_{channel}`。不可信结果不回写，保留原中心基点数据。
 
 ### 3. 查询结果
 
@@ -240,8 +245,8 @@ GET_TOOL_CENTER TOOL=0
 
 | 命令 | 参数 | 说明 |
 |---|---|---|
-| `TOOL_EDDY_CALIBRATE` | `TOOL=`（必填）, `CENTER_XY=x,y`（必填）, `CHANNEL=0..3`, `SCAN_HEIGHT_OFFSET=`, `REPEATS=1..10`, `PAIR_CANCEL=0/1`, `DIR=45,135` | 以本次 `CENTER_XY` 为基准校准指定工具的中心坐标 |
-| `TOOL_EDDY_FIND_COIL` | `[REGION=xmin,ymin,xmax,ymax]`, `[GRID=1]`, `[RASTER_SPEED=20]`, `[CHANNEL=0]` | 大范围自动找线圈中心：命令区域优先于 `find_coil_region`，输出 `CENTER_XY` 供 G-code 保存 |
+| `TOOL_EDDY_CALIBRATE` | `TOOL=`（必填）, `CENTER_XY=x,y`（必填）, `CHANNEL=0..3`, `SCAN_HEIGHT_OFFSET=`, `REPEATS=1..10`, `ITERATIONS=1..10`, `PAIR_CANCEL=0/1`, `DIR=45,135` | 先执行 `ITERATIONS` 轮中心更新，每轮以上一轮结果为基点且只测一次；然后固定最终基点执行 `REPEATS` 次测量并取平均。扫描量约为方向数 × (`ITERATIONS` + `REPEATS`) |
+| `TOOL_EDDY_FIND_COIL` | `[REGION=xmin,ymin,xmax,ymax]`, `[GRID=1]`, `[RASTER_SPEED=20]`, `[SCAN_HEIGHT_OFFSET=0]`, `[CHANNEL=0]` | 大范围自动找线圈中心：命令区域优先于 `find_coil_region`，输出 `CENTER_XY` 供 G-code 保存；`SCAN_HEIGHT_OFFSET` 与 `TOOL_EDDY_CALIBRATE` 同一形式，光栅与正交精扫共用 |
 | `GET_TOOL_CENTER` | `TOOL=` | 查询该工具上次校准结果 |
 | `SET_TOOL_Z` | `TOOL=`, `Z=` | 由外部来源（如 tap 探测）写入该工具的 Z 坐标 |
 | `CLEAR_TOOL_CENTER` | `[TOOL=]` | 清除某工具或全部工具的校准数据 |
@@ -273,13 +278,13 @@ git pull
 ```
 
 符号链接安装方式下 `git pull` 即时生效（复制安装方式需重跑
-`./klipper/install.sh`），之后重启 klipper 并用 `TOOL_EDDY_VERSION` 确认版本号。
+`bash ./klipper/install.sh`），之后重启 klipper 并用 `TOOL_EDDY_VERSION` 确认版本号。
 
 ## 卸载
 
 ```bash
 cd ~/tool_eddy_calibration
-./klipper/uninstall.sh
+bash ./klipper/uninstall.sh
 ```
 
 并从 `printer.cfg` 删除 `[tool_eddy_calibration ...]` 节、从 `moonraker.conf`
