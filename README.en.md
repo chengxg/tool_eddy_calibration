@@ -11,8 +11,9 @@ least squares), yielding XY offsets between tools.
 ![Module overview](img/模块介绍双线圈-en.png)
 
 - Non-contact measurement — works with a dirty nozzle
-- Multi-channel coil support (LDC1612 / LDC1614, ships with the `ldc1612_2.py`
-  driver, runtime-switchable channels 0-3); each channel has its own coil
+- Uses Klipper's official `ldc1612.py` driver by default (channel 0 only).
+  Set `use_custom_ldc1612_driver: True` to use the bundled `ldc1612_2.py`
+  driver with runtime-switchable channels 0-3; each channel has its own coil
   position and scan settings
 - `TOOL_EDDY_FIND_COIL` automatic serpentine raster search for the coil center —
   no manual coordinate measuring; the macro suite persists the result as the
@@ -35,7 +36,7 @@ least squares), yielding XY offsets between tools.
 Hardware reference: [oshwhub "Little Crab" dual-coil board](https://oshwhub.com/cxg01/project_lbabffjk)
 (schematics / Gerber in the [hardware/](hardware/) directory)
 
-Version: **V2.2.0** (query with the `TOOL_EDDY_VERSION` command)
+Version: **V2.2.1** (query with the `TOOL_EDDY_VERSION` command)
 
 ## Repository layout
 
@@ -137,8 +138,8 @@ make flash         # or however you flash your board
 ```
 
 After flashing and restarting, run `TEST_LDC1612` to verify the sensor and
-`TOOL_EDDY_VERSION` to confirm the plugin version and driver (should show
-`version: 2.2.0`, `driver: ldc1612_2`).
+`TOOL_EDDY_VERSION` to confirm the plugin version and driver (by default it
+should show `version: 2.2.1`, `driver: ldc1612`).
 
 > Note: after a Moonraker update, if the firmware sources changed you must
 > rebuild and re-flash manually (Moonraker restarts klipper but never flashes
@@ -160,6 +161,9 @@ sensor_type: ldc1612
 #data_rate: 400           # sample rate (Hz), ~5000 max (settling-time limited),
                           # minimum depends on frequency (≈39 at 40MHz)
 #reg_drive_current: 25
+# Uses the official ldc1612.py driver by default; only CHANNEL=0 is allowed.
+# Set True to use bundled ldc1612_2.py and enable CHANNEL=1..3.
+#use_custom_ldc1612_driver: False
 
 # Coil plane Z (machine coordinates)
 coil_z: 0.5
@@ -174,7 +178,7 @@ find_coil_region: 90,90,110,110
 #scan_length: 10.0
 
 # Per-channel overrides for channels 1-3 (default: channel 0 values;
-# requires ldc1612_2.py and multi-coil hardware)
+# requires use_custom_ldc1612_driver: True, ldc1612_2.py, and multi-coil hardware)
 #coil_z1: 0.5
 #find_coil_region1: 95,90,115,110
 #coil_inner_diameter1: 2.0
@@ -208,6 +212,7 @@ find_coil_region: 90,90,110,110
 | Option | Default | Range | Description |
 |---|---|---|---|
 | `coil_z` | required | - | Machine Z of the coil surface; must be set before finding/calibrating |
+| `use_custom_ldc1612_driver` | `False` | - | `False` uses official `ldc1612.py` (only `CHANNEL=0`); `True` uses bundled `ldc1612_2.py` and enables `CHANNEL=1..3` |
 | `find_coil_region` | required | - | Default coil search region `xmin,ymin,xmax,ymax`; per-channel `find_coil_regionN`, command `REGION=` wins |
 | `coil_inner_diameter` | 2.0 | 1.5~30 | Coil inner diameter, sizes the fitting window |
 | `scan_height` | 0.5 | -20~50 | Scan plane height above the coil surface (mm) |

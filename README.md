@@ -9,8 +9,9 @@ Klipper 多热头（工具切换）XY 喷嘴偏移校准插件。基于床装 LD
 ![模块介绍](img/模块介绍双线圈.png)
 
 - 非接触测量，不怕脏喷嘴
-- 多通道线圈支持（LDC1612 / LDC1614，随仓库附带 `ldc1612_2.py` 驱动，
-  可运行时切换通道 0-3），每个通道独立配置线圈位置与扫描参数
+- 默认使用 Klipper 官方 `ldc1612.py` 驱动（仅通道 0）；设置
+  `use_custom_ldc1612_driver: True` 后使用随仓库附带的 `ldc1612_2.py`
+  驱动，可运行时切换通道 0-3，每个通道独立配置线圈位置与扫描参数
 - `TOOL_EDDY_FIND_COIL` 大范围蛇形光栅自动找线圈中心，无需手动量坐标；
   结果经宏套件保存为共用的 `coil_x/y_{channel}`，一次寻找全部工具共用
 - 自动检测信号形态（峰值形 / 谷底形）；峰值搜索以扫描中段为基准，
@@ -29,7 +30,7 @@ Klipper 多热头（工具切换）XY 喷嘴偏移校准插件。基于床装 LD
 硬件参考：[嘉立创开源硬件 "小螃蟹" 双线圈板](https://oshwhub.com/cxg01/project_lbabffjk)
 （原理图 / Gerber 见 [hardware/](hardware/) 目录）
 
-版本：**V2.2.0**（`TOOL_EDDY_VERSION` 命令可查询）
+版本：**V2.2.1**（`TOOL_EDDY_VERSION` 命令可查询）
 
 ## 仓库结构
 
@@ -123,7 +124,7 @@ make flash         # 按你的主板烧录方式
 ```
 
 烧录并重启后，用 `TEST_LDC1612` 验证传感器读数，`TOOL_EDDY_VERSION` 确认
-插件版本与驱动（应显示 `version: 2.2.0`、`driver: ldc1612_2`）。
+插件版本与驱动（默认应显示 `version: 2.2.1`、`driver: ldc1612`）。
 
 > 注意：Moonraker 更新本插件后，若固件源码有变化，需手动重新编译烧录固件
 > （Moonraker 只会重启 klipper，不会重刷固件）。
@@ -143,6 +144,9 @@ sensor_type: ldc1612
 #data_rate: 400           # 采样频率 (Hz), 上限约 5000 (受稳定时间约束),
                           # 下限随 frequency 而定 (40MHz 时约 39)
 #reg_drive_current: 25
+# 默认使用官方 ldc1612.py 驱动，只能使用 CHANNEL=0。
+# 设置为 True 才使用仓库附带的 ldc1612_2.py，并启用 CHANNEL=1..3。
+#use_custom_ldc1612_driver: False
 
 # 线圈平面 Z（机器坐标）
 coil_z: 0.5
@@ -156,7 +160,8 @@ find_coil_region: 90,90,110,110
 #scan_speed: 5.0
 #scan_length: 10.0
 
-# 通道 1-3 的独立覆盖（未填则沿用通道 0 的值; 需要 ldc1612_2.py 与多线圈硬件）
+# 通道 1-3 的独立覆盖（未填则沿用通道 0 的值；需要
+# use_custom_ldc1612_driver: True、ldc1612_2.py 与多线圈硬件）
 #coil_z1: 0.5
 #find_coil_region1: 95,90,115,110
 #coil_inner_diameter1: 2.0
@@ -188,6 +193,7 @@ find_coil_region: 90,90,110,110
 | 选项 | 默认值 | 范围 | 说明 |
 |---|---|---|---|
 | `coil_z` | 必填 | - | 线圈表面的机器 Z；执行找线圈或校准前必须配置 |
+| `use_custom_ldc1612_driver` | `False` | - | `False` 使用官方 `ldc1612.py`（仅 `CHANNEL=0`）；`True` 使用仓库的 `ldc1612_2.py` 并启用 `CHANNEL=1..3` |
 | `find_coil_region` | 必填 | - | 默认找线圈区域，格式 `xmin,ymin,xmax,ymax`；通道 N 可用 `find_coil_regionN` 覆盖，命令 `REGION=` 优先 |
 | `coil_inner_diameter` | 2.0 | 1.5~30 | 线圈内径，决定峰值拟合窗口 |
 | `scan_height` | 0.5 | -20~50 | 扫描平面相对线圈表面的高度 (mm) |

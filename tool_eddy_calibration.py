@@ -1,7 +1,7 @@
 # 使用涡流传感器进行多热头XY偏移校准
 # 原理：在已知线圈位置的基础上，沿多个方向扫描，检测频率峰值位置，通过几何方法重建工具中心坐标
-# 该插件依赖klipper的ldc1612.py；若安装了支持多通道切换的 ldc1612_2.py
-# 则优先使用其驱动（可运行时切换通道0-3），否则回退到官方单通道 ldc1612.py
+# 该插件默认使用 Klipper 官方 ldc1612.py；设置 use_custom_ldc1612_driver
+# 后才使用支持多通道切换的 ldc1612_2.py（可运行时切换通道 0-3）
 # github开源地址: https://github.com/chengxg/tool_eddy_calibration
 # 嘉立创开源地址: https://oshwhub.com/cxg01/project_lbabffjk
 # version: V1.0.0 2026-06-01 实现基础XY偏移校准
@@ -46,7 +46,7 @@ from typing import TYPE_CHECKING, List, Optional, Sequence, cast
 from . import ldc1612
 
 # 插件版本, TOOL_EDDY_VERSION 命令与 get_status 可查询, 用于确认更新是否生效
-TOOL_EDDY_VERSION = "2.2.0"
+TOOL_EDDY_VERSION = "2.2.1"
 
 # 大范围找线圈: 中心与周围环带的最低响应差 (Hz)
 FIND_COIL_MIN_RESPONSE_HZ = 50.0
@@ -131,18 +131,20 @@ class ToolEddyCalibration:
         self.name = config.get_name()
         self.gcode = self.printer.lookup_object('gcode')
 
-        # 创建传感器（参考 probe_eddy_current.py）
-        # sensor_type 仍为 "ldc1612"；若安装了支持双通道切换的 ldc1612_2.py
-        # 则优先使用其驱动（可运行时切换通道0/1），否则回退到官方单通道
-        # ldc1612.py（仅通道0）。
+        # 创建传感器（参考 probe_eddy_current.py）。默认使用官方单通道
+        # ldc1612.py；只有显式选择自定义驱动时才启用 ldc1612_2.py。
         sensor_type = config.getchoice('sensor_type', {'ldc1612': 'ldc1612'})
-        self.has_ldc1612_2 = True
-        try:
-            from . import ldc1612_2
+        self.has_ldc1612_2 = config.getboolean(
+            'use_custom_ldc1612_driver', False)
+        if self.has_ldc1612_2:
+            try:
+                from . import ldc1612_2
+            except ImportError:
+                raise config.error(
+                    "use_custom_ldc1612_driver requires ldc1612_2.py")
             sensor_class = ldc1612_2.LDC1612
-        except ImportError:
+        else:
             sensor_class = ldc1612.LDC1612
-            self.has_ldc1612_2 = False
         self.sensor = sensor_class(config, None)
 
         # 扫描参数按通道分组。线圈 XY 中心不属于静态配置：首次通过
@@ -270,14 +272,15 @@ class ToolEddyCalibration:
     def _select_channel(self, gcmd):
         """从命令参数读取 CHANNEL (默认 0) 并切换到该通道, 再刷新线圈/扫描参数。
         每个需要读取传感器的命令开头调用, 无需先执行 SET_TOOL_EDDY_CHANNEL。
-        通道 1-3 需 ldc1612_2.py; 单通道 ldc1612.py 仅支持通道 0。
+        通道 1-3 需设置 use_custom_ldc1612_driver: True；官方单通道
+        ldc1612.py 仅支持通道 0。
         通道实际变化时清空缓存的工具 XY 中心；Z 是工具自身接触高度，与通道
         无关，保留。"""
         channel = gcmd.get_int('CHANNEL', 0, minval=0, maxval=3)
         if channel >= 1 and not self.has_ldc1612_2:
             raise gcmd.error(
-                "Channels 1-3 require ldc1612_2.py to be installed; "
-                "only the single-channel ldc1612.py is available")
+                "CHANNEL=1..3 requires use_custom_ldc1612_driver: True; "
+                "the official ldc1612.py driver only supports channel 0")
         previous = getattr(self.sensor, 'channel', 0)
         if self.has_ldc1612_2:
             self.sensor.set_channel(channel)
@@ -633,7 +636,10 @@ class ToolEddyCalibration:
         else:
             gcmd.respond_info("  Quality: UNSTABLE - frequency range >= 200Hz")
 
-    cmd_SET_TOOL_EDDY_CHANNEL_help = "Set the active LDC1612 coil/channel (0-3). Optional: each command also accepts CHANNEL= (default 0) directly"
+    cmd_SET_TOOL_EDDY_CHANNEL_help = (
+        "Set the active LDC1612 coil/channel (0-3; channels 1-3 require "
+        "use_custom_ldc1612_driver: True). Optional: each command also "
+        "accepts CHANNEL= (default 0) directly")
     def cmd_SET_TOOL_EDDY_CHANNEL(self, gcmd):
         # 通道切换与参数刷新逻辑统一走 _select_channel; 各校准/测试命令也直接
         # 接受 CHANNEL= (默认 0), 通常无需先调用本命令。
